@@ -13,7 +13,7 @@
         <div class="card">
           <h3><?= h($s['title']) ?></h3>
           <p><?= h((string)$s['description']) ?></p>
-          <form method="post" action="/?page=apply">
+          <form method="post" action="/?page=apply" class="scholarship-apply-form" data-scholarship-id="<?= (int)$s['id'] ?>">
             <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
             <input type="hidden" name="scholarship_id" value="<?= (int)$s['id'] ?>">
             <?php
@@ -30,31 +30,119 @@
     </div>
 
   <?php else: ?>
-    <?php if ($user['role'] === 'admin'): ?>
+    <?php
+      $schStmt = $pdo->prepare('SELECT id, title, description, status, form_schema_json, created_at FROM scholarships WHERE tenant_id = ? ORDER BY id DESC LIMIT 50');
+      $schStmt->execute([$user['tenant_id']]);
+      $scholarshipsForAdmin = $schStmt->fetchAll();
+
+      $scholarshipVersions = [];
+      if (function_exists('scholarship_form_versioning_ready') && scholarship_form_versioning_ready($pdo)) {
+        $verStmt = $pdo->prepare(
+          'SELECT v.scholarship_id, s.title AS scholarship_title, v.version_no, v.status, v.created_at
+           FROM scholarship_form_versions v
+           INNER JOIN scholarships s ON s.id = v.scholarship_id
+           WHERE v.tenant_id = ?
+           ORDER BY v.scholarship_id DESC, v.version_no DESC
+           LIMIT 200'
+        );
+        $verStmt->execute([$user['tenant_id']]);
+        $scholarshipVersions = $verStmt->fetchAll();
+      }
+    ?>
+    <?php if (in_array($user['role'], ['admin', 'it'], true)): ?>
       <div class="card" style="margin-bottom: 14px;">
         <h3>Create Scholarship</h3>
         <form method="post" action="/?page=create_scholarship" id="create-scholarship-form">
           <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+          <input type="hidden" name="scholarship_id" id="scholarship_id" value="0">
           <input type="hidden" name="form_schema_json" id="form_schema_json" value="[]">
 
+          <p id="scholarship-editor-mode"><strong>Mode:</strong> Create new scholarship</p>
+
           <label>Title</label>
-          <input name="title" required>
+          <input name="title" id="scholarship_title_input" required>
 
           <label>Description</label>
-          <textarea name="description" rows="3"></textarea>
+          <textarea name="description" id="scholarship_description_input" rows="3"></textarea>
 
           <label>Status</label>
-          <select name="status">
+          <select name="status" id="scholarship_status_input">
             <option value="draft">Draft</option>
             <option value="published">Published</option>
             <option value="closed">Closed</option>
           </select>
 
+          <p style="margin-top:8px; color:#555;">When editing an existing scholarship, each save creates a new form version.</p>
+
           <h4>Form Fields</h4>
           <div id="fields-builder"></div>
           <button class="btn" type="button" id="add-field-btn">Add Field</button>
-          <button class="btn primary" type="submit">Create Scholarship</button>
+          <button class="btn" type="button" id="reset-scholarship-editor">Reset Editor</button>
+          <button class="btn primary" type="submit" id="save-scholarship-btn">Save Scholarship</button>
         </form>
+      </div>
+
+      <div class="card" style="margin-bottom: 14px;">
+        <h3>Manage Scholarships</h3>
+        <table class="table">
+          <thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Created</th><th>Action</th></tr></thead>
+          <tbody>
+          <?php foreach ($scholarshipsForAdmin as $sc): ?>
+            <tr>
+              <td><?= (int)$sc['id'] ?></td>
+              <td><?= h((string)$sc['title']) ?></td>
+              <td><?= h((string)$sc['status']) ?></td>
+              <td><?= h((string)$sc['created_at']) ?></td>
+              <td>
+                <button
+                  class="btn load-scholarship-btn"
+                  type="button"
+                  data-id="<?= (int)$sc['id'] ?>"
+                  data-title="<?= h((string)$sc['title']) ?>"
+                  data-description="<?= h((string)($sc['description'] ?? '')) ?>"
+                  data-status="<?= h((string)$sc['status']) ?>"
+                  data-schema="<?= h((string)$sc['form_schema_json']) ?>"
+                >
+                  Edit / New Version
+                </button>
+              </td>
+            </tr>
+          <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card" style="margin-bottom: 14px;">
+        <h3>Form Versions History</h3>
+        <?php if ($scholarshipVersions === []): ?>
+          <p>No version records yet (or migration not applied).</p>
+        <?php else: ?>
+          <table class="table">
+            <thead><tr><th>Scholarship</th><th>Version</th><th>Status</th><th>Created</th><th>Action</th></tr></thead>
+            <tbody>
+            <?php foreach ($scholarshipVersions as $ver): ?>
+              <tr>
+                <td><?= h((string)$ver['scholarship_title']) ?></td>
+                <td>v<?= (int)$ver['version_no'] ?></td>
+                <td><?= h((string)$ver['status']) ?></td>
+                <td><?= h((string)$ver['created_at']) ?></td>
+                <td>
+                  <?php if ((string)$ver['status'] !== 'published'): ?>
+                    <form method="post" action="/?page=publish_scholarship_version">
+                      <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+                      <input type="hidden" name="scholarship_id" value="<?= (int)$ver['scholarship_id'] ?>">
+                      <input type="hidden" name="version_no" value="<?= (int)$ver['version_no'] ?>">
+                      <button class="btn" type="submit">Publish This Version</button>
+                    </form>
+                  <?php else: ?>
+                    <span class="badge">Live</span>
+                  <?php endif; ?>
+                </td>
+              </tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+        <?php endif; ?>
       </div>
     <?php endif; ?>
     <?php if (in_array($user['role'], ['admin', 'it'], true)): ?>
@@ -103,6 +191,19 @@
       $blacklistStmt = $pdo->prepare('SELECT register_id, email_original, reason, created_at FROM blacklist_entries WHERE tenant_id = ? ORDER BY id DESC LIMIT 50');
       $blacklistStmt->execute([$user['tenant_id']]);
       $blacklistRows = $blacklistStmt->fetchAll();
+
+      $notificationRows = [];
+      if (in_array($user['role'], ['admin', 'it'], true) && function_exists('notification_inbox_ready') && notification_inbox_ready($pdo)) {
+        $notificationStmt = $pdo->prepare(
+          'SELECT id, event_name, notification_type, correlation_id, delivery_route, status, auth_valid, source_ip, received_at
+           FROM notification_inbox
+           WHERE tenant_id = ? OR tenant_id IS NULL
+           ORDER BY id DESC
+           LIMIT 40'
+        );
+        $notificationStmt->execute([$user['tenant_id']]);
+        $notificationRows = $notificationStmt->fetchAll();
+      }
     ?>
     <div class="grid" style="margin-bottom: 14px;">
       <div class="card">
@@ -155,6 +256,34 @@
         </tbody>
       </table>
     </div>
+
+    <?php if (in_array($user['role'], ['admin', 'it'], true)): ?>
+      <div class="card" style="margin-bottom:14px;">
+        <h3>Internal Notification Inbox</h3>
+        <?php if ($notificationRows === []): ?>
+          <p>No notification events captured yet.</p>
+        <?php else: ?>
+          <table class="table">
+            <thead><tr><th>ID</th><th>Event</th><th>Type</th><th>Correlation</th><th>Route</th><th>Auth</th><th>Status</th><th>IP</th><th>Received</th></tr></thead>
+            <tbody>
+            <?php foreach ($notificationRows as $nr): ?>
+              <tr>
+                <td><?= (int)$nr['id'] ?></td>
+                <td><?= h((string)$nr['event_name']) ?></td>
+                <td><?= h((string)($nr['notification_type'] ?? '')) ?></td>
+                <td><?= h((string)($nr['correlation_id'] ?? '')) ?></td>
+                <td><?= h((string)($nr['delivery_route'] ?? '')) ?></td>
+                <td><?= (int)$nr['auth_valid'] === 1 ? 'valid' : 'invalid' ?></td>
+                <td><?= h((string)$nr['status']) ?></td>
+                <td><?= h((string)($nr['source_ip'] ?? '')) ?></td>
+                <td><?= h((string)$nr['received_at']) ?></td>
+              </tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+        <?php endif; ?>
+      </div>
+    <?php endif; ?>
 
     <table class="table">
       <thead>

@@ -1,5 +1,5 @@
 {
-  "name": "Scholarship Submit MVP",
+  "name": "Scholarship Submit Step 8",
   "nodes": [
     {
       "parameters": {
@@ -11,43 +11,264 @@
       "name": "Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1,
-      "position": [240, 300]
+      "position": [220, 340]
     },
     {
       "parameters": {
-        "mode": "keepKeyMatches",
-        "values": {
+        "functionCode": "return items.map((item) => {\n  const body = item.json.body || item.json;\n\n  return {\n    json: {\n      event: body.event,\n      application_id: body.application_id,\n      tenant_id: body.tenant_id,\n      scholarship_id: body.scholarship_id || '',\n      scholarship_title: body.scholarship_title || '',\n      student_email: body.student_email || '',\n      answers_json: body.answers_json || '',\n      reason: body.reason || '',\n      by: body.by || ''\n    }\n  };\n});"
+      },
+      "id": "Set_1",
+      "name": "Normalize Payload",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [460, 340]
+    },
+    {
+      "parameters": {
+        "functionCode": "return items.map((item) => {\n  const payload = { ...item.json };\n  const fallbackCorrelation = `${payload.tenant_id || 'na'}-${payload.application_id || 'na'}-${payload.event || 'unknown'}`;\n\n  return {\n    json: {\n      ...payload,\n      occurred_at: new Date().toISOString(),\n      correlation_id: payload.correlation_id || fallbackCorrelation,\n      workflow_stage: 'step8',\n      source: 'tkif_scholarship'\n    }\n  };\n});"
+      },
+      "id": "Fn_Trace",
+      "name": "Add Trace Metadata",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [620, 340]
+    },
+    {
+      "parameters": {
+        "conditions": {
           "string": [
             {
-              "name": "event",
-              "value": "={{$json.body.event}}"
-            },
-            {
-              "name": "application_id",
-              "value": "={{$json.body.application_id}}"
-            },
-            {
-              "name": "tenant_id",
-              "value": "={{$json.body.tenant_id}}"
+              "value1": "={{$json.event}}",
+              "operation": "equal",
+              "value2": "application_rejected_blacklist"
             }
           ]
         }
       },
-      "id": "Set_1",
-      "name": "Normalize Payload",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3,
-      "position": [460, 300]
+      "id": "If_Blacklist",
+      "name": "Is Blacklist Event?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [840, 180]
     },
     {
       "parameters": {
-        "functionCode": "return [{json: {ok: true, message: 'MVP webhook received', input: $json}}];"
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.event}}",
+              "operation": "equal",
+              "value2": "application_submitted"
+            }
+          ]
+        }
       },
-      "id": "Function_1",
-      "name": "Acknowledge",
+      "id": "If_Submitted",
+      "name": "Is Submission Event?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [840, 340]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.event}}",
+              "operation": "regex",
+              "value2": "^application_(approved|rejected)$"
+            }
+          ]
+        }
+      },
+      "id": "If_Decision",
+      "name": "Is Decision Event?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [840, 500]
+    },
+    {
+      "parameters": {
+        "functionCode": "return items.map((item) => ({ json: { ...item.json, notification_type: 'blacklist_alert', priority: 'high', route: 'security', target_endpoint: '', message: `Blacklist-triggered rejection for application #${item.json.application_id} in tenant ${item.json.tenant_id}.` } }));"
+      },
+      "id": "Fn_Blacklist",
+      "name": "Build Blacklist Alert",
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
-      "position": [680, 300]
+      "position": [1080, 140]
+    },
+    {
+      "parameters": {
+        "functionCode": "return items.map((item) => ({ json: { ...item.json, notification_type: 'submission_received', priority: 'normal', route: 'review_queue', target_endpoint: '', message: `Application #${item.json.application_id} submitted for tenant ${item.json.tenant_id}.` } }));"
+      },
+      "id": "Fn_SubmittedNotify",
+      "name": "Build Submission Notification",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1080, 300]
+    },
+    {
+      "parameters": {
+        "amount": 30,
+        "unit": "minutes"
+      },
+      "id": "Wait_Escalation",
+      "name": "Wait 30m SLA",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [1290, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "return items.map((item) => ({ json: { ...item.json, escalation_required: true, escalation_reason: 'No decision within 30 minutes from submission event', notification_type: 'sla_escalation', priority: 'high', route: 'operations', target_endpoint: '', message: `Escalation for application #${item.json.application_id}: pending review beyond SLA.` } }));"
+      },
+      "id": "Fn_Escalate",
+      "name": "Build Escalation Event",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1500, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "return items.map((item) => ({ json: { ...item.json, notification_type: 'decision_notice', priority: 'normal', route: 'student_notice', target_endpoint: '', message: `Decision event ${item.json.event} for application #${item.json.application_id}.` } }));"
+      },
+      "id": "Fn_Decision",
+      "name": "Build Decision Notification",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1080, 540]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.target_endpoint || $env.N8N_NOTIFICATION_WEBHOOK_URL || $env.N8N_ESCALATION_WEBHOOK_URL || ''}}",
+              "operation": "regex",
+              "value2": ".+"
+            }
+          ]
+        }
+      },
+      "id": "If_HasEndpoint",
+      "name": "Has Delivery Endpoint?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1710, 340]
+    },
+    {
+      "parameters": {
+        "functionCode": "return items.map((item) => {\n  const payload = { ...item.json };\n  const timestamp = String(Math.floor(Date.now() / 1000));\n  const body = JSON.stringify(payload);\n\n  return {\n    json: {\n      ...payload,\n      _dispatch_timestamp: timestamp,\n      _dispatch_body: body\n    }\n  };\n});"
+      },
+      "id": "Fn_DispatchSign",
+      "name": "Build Dispatch Signature",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1840, 260]
+    },
+    {
+      "parameters": {
+        "action": "hmac",
+        "binaryData": false,
+        "type": "SHA256",
+        "value": "={{$json._dispatch_timestamp + '.' + $json._dispatch_body}}",
+        "dataPropertyName": "_dispatch_hmac",
+        "secret": "={{$env.INTERNAL_NOTIFICATION_SECRET}}",
+        "encoding": "hex"
+      },
+      "id": "Crypto_DispatchSign",
+      "name": "Sign Dispatch Payload",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 1,
+      "position": [1930, 260]
+    },
+    {
+      "parameters": {
+        "functionCode": "return items.map((item) => ({\n  json: {\n    ...item.json,\n    _dispatch_signature: `sha256=${item.json._dispatch_hmac || ''}`\n  }\n}));"
+      },
+      "id": "Fn_DispatchSignFinalize",
+      "name": "Finalize Dispatch Signature",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2020, 260]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$json.target_endpoint || $env.N8N_NOTIFICATION_WEBHOOK_URL || $env.N8N_ESCALATION_WEBHOOK_URL}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-TKIF-Timestamp",
+              "value": "={{$json._dispatch_timestamp}}"
+            },
+            {
+              "name": "X-TKIF-Signature",
+              "value": "={{$json._dispatch_signature}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "specifyBody": "string",
+        "rawContentType": "application/json",
+        "body": "={{$json._dispatch_body}}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "Http_Dispatch",
+      "name": "Dispatch Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2140, 260],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.error ? '1' : '0'}}",
+              "operation": "equal",
+              "value2": "1"
+            }
+          ]
+        }
+      },
+      "id": "If_DispatchFailed",
+      "name": "Dispatch Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [2150, 260]
+    },
+    {
+      "parameters": {
+        "functionCode": "return items.map((item) => ({\n  json: {\n    dead_letter: true,\n    dead_letter_reason: item.json.error?.message || 'notification_dispatch_failed',\n    dispatch_attempted_at: new Date().toISOString(),\n    payload: item.json\n  }\n}));"
+      },
+      "id": "Fn_DeadLetterDispatch",
+      "name": "Build Dead Letter (Dispatch Failure)",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2370, 220]
+    },
+    {
+      "parameters": {
+        "functionCode": "return items.map((item) => ({\n  json: {\n    dead_letter: true,\n    dead_letter_reason: 'missing_delivery_endpoint',\n    dispatch_attempted_at: new Date().toISOString(),\n    payload: item.json\n  }\n}));"
+      },
+      "id": "Fn_DeadLetterMissingEndpoint",
+      "name": "Build Dead Letter (Missing Endpoint)",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1930, 420]
     }
   ],
   "connections": {
@@ -66,7 +287,189 @@
       "main": [
         [
           {
-            "node": "Acknowledge",
+            "node": "Add Trace Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add Trace Metadata": {
+      "main": [
+        [
+          {
+            "node": "Is Blacklist Event?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Is Submission Event?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Is Decision Event?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Blacklist Event?": {
+      "main": [
+        [
+          {
+            "node": "Build Blacklist Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Submission Event?": {
+      "main": [
+        [
+          {
+            "node": "Build Submission Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Submission Notification": {
+      "main": [
+        [
+          {
+            "node": "Wait 30m SLA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 30m SLA": {
+      "main": [
+        [
+          {
+            "node": "Build Escalation Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Decision Event?": {
+      "main": [
+        [
+          {
+            "node": "Build Decision Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Blacklist Alert": {
+      "main": [
+        [
+          {
+            "node": "Has Delivery Endpoint?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Escalation Event": {
+      "main": [
+        [
+          {
+            "node": "Has Delivery Endpoint?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Decision Notification": {
+      "main": [
+        [
+          {
+            "node": "Has Delivery Endpoint?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Delivery Endpoint?": {
+      "main": [
+        [
+          {
+            "node": "Build Dispatch Signature",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Dead Letter (Missing Endpoint)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Dispatch Signature": {
+      "main": [
+        [
+          {
+            "node": "Sign Dispatch Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign Dispatch Payload": {
+      "main": [
+        [
+          {
+            "node": "Finalize Dispatch Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Dispatch Signature": {
+      "main": [
+        [
+          {
+            "node": "Dispatch Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dispatch Notification": {
+      "main": [
+        [
+          {
+            "node": "Dispatch Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dispatch Failed?": {
+      "main": [
+        [
+          {
+            "node": "Build Dead Letter (Dispatch Failure)",
             "type": "main",
             "index": 0
           }

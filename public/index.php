@@ -43,6 +43,36 @@ function require_csrf(): void
     }
 }
 
+function json_response(int $statusCode, array $payload): void
+{
+  http_response_code($statusCode);
+  header('Content-Type: application/json; charset=utf-8');
+  echo json_encode($payload, JSON_UNESCAPED_UNICODE);
+  exit;
+}
+
+function request_header_value(string $name): string
+{
+  $serverKey = 'HTTP_' . strtoupper(str_replace('-', '_', $name));
+  $value = $_SERVER[$serverKey] ?? null;
+  if (is_string($value) && $value !== '') {
+    return trim($value);
+  }
+
+  if (function_exists('getallheaders')) {
+    $headers = getallheaders();
+    if (is_array($headers)) {
+      foreach ($headers as $key => $headerValue) {
+        if (strcasecmp((string)$key, $name) === 0 && is_string($headerValue)) {
+          return trim($headerValue);
+        }
+      }
+    }
+  }
+
+  return '';
+}
+
 function current_user(): ?array
 {
     return $_SESSION['user'] ?? null;
@@ -93,6 +123,161 @@ function identity_table_ready(PDO $pdo): bool
   }
 
   return $ready;
+}
+
+function scholarship_form_versioning_ready(PDO $pdo): bool
+{
+  static $ready = null;
+  if (is_bool($ready)) {
+    return $ready;
+  }
+
+  try {
+    $stmt = $pdo->query("SHOW TABLES LIKE 'scholarship_form_versions'");
+    $ready = $stmt !== false && (bool)$stmt->fetchColumn();
+  } catch (Throwable) {
+    $ready = false;
+  }
+
+  return $ready;
+}
+
+function application_form_snapshot_ready(PDO $pdo): bool
+{
+  static $ready = null;
+  if (is_bool($ready)) {
+    return $ready;
+  }
+
+  try {
+    $stmt = $pdo->query("SHOW TABLES LIKE 'application_form_snapshots'");
+    $ready = $stmt !== false && (bool)$stmt->fetchColumn();
+  } catch (Throwable) {
+    $ready = false;
+  }
+
+  return $ready;
+}
+
+function notification_inbox_ready(PDO $pdo): bool
+{
+  static $ready = null;
+  if (is_bool($ready)) {
+    return $ready;
+  }
+
+  try {
+    $stmt = $pdo->query("SHOW TABLES LIKE 'notification_inbox'");
+    $ready = $stmt !== false && (bool)$stmt->fetchColumn();
+  } catch (Throwable) {
+    $ready = false;
+  }
+
+  return $ready;
+}
+
+function notification_hmac_verification(array $config, string $rawBody): array
+{
+  $secret = trim((string)($config['notifications']['internal_secret'] ?? ''));
+  if ($secret === '') {
+    return ['ok' => false, 'error' => 'notification_secret_not_configured'];
+  }
+
+  $timestampHeader = request_header_value('X-TKIF-Timestamp');
+  $signatureHeader = request_header_value('X-TKIF-Signature');
+  if ($timestampHeader === '' || $signatureHeader === '') {
+    return ['ok' => false, 'error' => 'missing_signature_headers'];
+  }
+
+  if (!preg_match('/^\d{10}$/', $timestampHeader)) {
+    return ['ok' => false, 'error' => 'invalid_signature_timestamp'];
+  }
+
+  $tolerance = max(30, (int)($config['notifications']['hmac_tolerance_seconds'] ?? 300));
+  $requestTs = (int)$timestampHeader;
+  if (abs(time() - $requestTs) > $tolerance) {
+    return ['ok' => false, 'error' => 'signature_timestamp_expired'];
+  }
+
+  $candidateBodies = [$rawBody];
+  $trimmedBody = rtrim($rawBody, "\r\n");
+  if ($trimmedBody !== $rawBody) {
+    $candidateBodies[] = $trimmedBody;
+  }
+
+  $decodedBody = json_decode($rawBody, true);
+  if (json_last_error() === JSON_ERROR_NONE) {
+    $canonicalBody = json_encode($decodedBody, JSON_UNESCAPED_SLASHES);
+    if (is_string($canonicalBody) && !in_array($canonicalBody, $candidateBodies, true)) {
+      $candidateBodies[] = $canonicalBody;
+    }
+  }
+
+  $signatureValid = false;
+  foreach ($candidateBodies as $candidateBody) {
+    $expectedSignature = 'sha256=' . hash_hmac('sha256', $timestampHeader . '.' . $candidateBody, $secret);
+    if (hash_equals($expectedSignature, $signatureHeader)) {
+      $signatureValid = true;
+      break;
+    }
+  }
+
+  if (!$signatureValid) {
+    return ['ok' => false, 'error' => 'invalid_signature'];
+  }
+
+  return ['ok' => true, 'error' => ''];
+}
+
+function resolve_active_scholarship_schema(PDO $pdo, array $scholarship): array
+{
+  $schemaJson = (string)($scholarship['form_schema_json'] ?? '[]');
+  $version = 1;
+
+  if (scholarship_form_versioning_ready($pdo)) {
+    $stmt = $pdo->prepare(
+      'SELECT version_no, form_schema_json
+       FROM scholarship_form_versions
+       WHERE scholarship_id = ? AND tenant_id = ?
+       ORDER BY version_no DESC
+       LIMIT 1'
+    );
+    $stmt->execute([(int)$scholarship['id'], (int)$scholarship['tenant_id']]);
+    $row = $stmt->fetch();
+    if ($row) {
+      $schemaJson = (string)($row['form_schema_json'] ?? $schemaJson);
+      $version = max(1, (int)($row['version_no'] ?? 1));
+    }
+  }
+
+  return [
+    'schema' => normalize_form_schema(json_decode($schemaJson, true)),
+    'version' => $version,
+  ];
+}
+
+function snapshot_application_form(PDO $pdo, int $tenantId, int $applicationId, int $scholarshipId, int $formVersion, array $formSchema, array $answers): void
+{
+  if (!application_form_snapshot_ready($pdo)) {
+    return;
+  }
+
+  $stmt = $pdo->prepare(
+    'INSERT INTO application_form_snapshots (application_id, tenant_id, scholarship_id, form_version_no, form_schema_json, answers_json)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       form_version_no = VALUES(form_version_no),
+       form_schema_json = VALUES(form_schema_json),
+       answers_json = VALUES(answers_json)'
+  );
+  $stmt->execute([
+    $applicationId,
+    $tenantId,
+    $scholarshipId,
+    max(1, $formVersion),
+    json_encode($formSchema, JSON_UNESCAPED_UNICODE),
+    json_encode($answers, JSON_UNESCAPED_UNICODE),
+  ]);
 }
 
 function find_active_user_by_identity(PDO $pdo, string $provider, string $providerUserId): ?array
@@ -478,7 +663,7 @@ function normalize_form_schema(mixed $schema): array
     return [];
   }
 
-  $allowedTypes = ['text', 'textarea', 'number', 'email', 'date'];
+  $allowedTypes = ['text', 'textarea', 'number', 'email', 'date', 'select', 'radio', 'checkbox'];
   $normalized = [];
 
   foreach ($schema as $field) {
@@ -499,15 +684,136 @@ function normalize_form_schema(mixed $schema): array
       $type = 'text';
     }
 
-    $normalized[] = [
+    $normalizedField = [
       'name' => $name,
       'label' => $label,
       'type' => $type,
       'required' => $required,
     ];
+
+    if (in_array($type, ['select', 'radio', 'checkbox'], true)) {
+      $rawOptions = $field['options'] ?? [];
+      $options = [];
+      if (is_array($rawOptions)) {
+        foreach ($rawOptions as $opt) {
+          $option = trim((string)$opt);
+          if ($option !== '') {
+            $options[] = $option;
+          }
+        }
+      }
+
+      $options = array_values(array_unique($options));
+      if ($options === []) {
+        continue;
+      }
+      $normalizedField['options'] = $options;
+    }
+
+    $visibleIf = $field['visible_if'] ?? null;
+    if (is_array($visibleIf)) {
+      $dependsOn = trim((string)($visibleIf['field'] ?? ''));
+      $operator = trim((string)($visibleIf['operator'] ?? ''));
+      $value = trim((string)($visibleIf['value'] ?? ''));
+      if ($operator === '' && isset($visibleIf['equals'])) {
+        $operator = 'equals';
+        $value = trim((string)$visibleIf['equals']);
+      }
+      $allowedOperators = ['equals', 'not_equals', 'contains', 'gt', 'gte', 'lt', 'lte'];
+      if (
+        $dependsOn !== ''
+        && preg_match('/^[a-zA-Z][a-zA-Z0-9_]{1,49}$/', $dependsOn)
+        && in_array($operator, $allowedOperators, true)
+        && $value !== ''
+        && $dependsOn !== $name
+      ) {
+        $normalizedField['visible_if'] = [
+          'field' => $dependsOn,
+          'operator' => $operator,
+          'value' => $value,
+        ];
+      }
+    }
+
+    $normalized[] = $normalizedField;
   }
 
   return $normalized;
+}
+
+function field_is_visible(array $field, array $answers): bool
+{
+  $visibleIf = $field['visible_if'] ?? null;
+  if (!is_array($visibleIf)) {
+    return true;
+  }
+
+  $dependsOn = trim((string)($visibleIf['field'] ?? ''));
+  $operator = trim((string)($visibleIf['operator'] ?? ''));
+  $value = trim((string)($visibleIf['value'] ?? ''));
+  if ($operator === '' && isset($visibleIf['equals'])) {
+    $operator = 'equals';
+    $value = trim((string)$visibleIf['equals']);
+  }
+  if ($dependsOn === '' || $operator === '' || $value === '') {
+    return true;
+  }
+
+  $actual = $answers[$dependsOn] ?? null;
+  if (is_array($actual)) {
+    $actualValues = array_map('strval', $actual);
+    if ($operator === 'contains') {
+      return in_array($value, $actualValues, true);
+    }
+    if ($operator === 'not_equals') {
+      return !in_array($value, $actualValues, true);
+    }
+    if ($operator === 'equals') {
+      return in_array($value, $actualValues, true);
+    }
+    return false;
+  }
+
+  $actualStr = trim((string)$actual);
+  switch ($operator) {
+    case 'equals':
+      return $actualStr === $value;
+    case 'not_equals':
+      return $actualStr !== $value;
+    case 'contains':
+      return $actualStr !== '' && mb_stripos($actualStr, $value) !== false;
+    case 'gt':
+    case 'gte':
+    case 'lt':
+    case 'lte':
+      if (!is_numeric($actualStr) || !is_numeric($value)) {
+        return false;
+      }
+      $actualNum = (float)$actualStr;
+      $targetNum = (float)$value;
+      if ($operator === 'gt') {
+        return $actualNum > $targetNum;
+      }
+      if ($operator === 'gte') {
+        return $actualNum >= $targetNum;
+      }
+      if ($operator === 'lt') {
+        return $actualNum < $targetNum;
+      }
+      return $actualNum <= $targetNum;
+    default:
+      return true;
+  }
+}
+
+function is_latin_or_arabic_text(string $value): bool
+{
+  $trimmed = trim($value);
+  if ($trimmed === '') {
+    return true;
+  }
+
+  return (bool)preg_match("/^[\\p{Latin}\\p{Arabic}\\p{M}\\s'\\-]+$/u", $trimmed);
 }
 
 function render_dynamic_field(array $field, array $old = []): void
@@ -516,17 +822,67 @@ function render_dynamic_field(array $field, array $old = []): void
   $label = (string)$field['label'];
   $type = (string)$field['type'];
   $required = (bool)$field['required'];
-  $value = (string)($old[$name] ?? '');
+  $value = $old[$name] ?? '';
   $requiredAttr = $required ? ' required' : '';
+  $visibleIf = is_array($field['visible_if'] ?? null) ? $field['visible_if'] : null;
+  $visibleIfField = $visibleIf ? (string)($visibleIf['field'] ?? '') : '';
+  $visibleIfOperator = $visibleIf ? (string)($visibleIf['operator'] ?? '') : '';
+  $visibleIfValue = $visibleIf ? (string)($visibleIf['value'] ?? '') : '';
+  if ($visibleIfOperator === '' && $visibleIf && isset($visibleIf['equals'])) {
+    $visibleIfOperator = 'equals';
+    $visibleIfValue = (string)$visibleIf['equals'];
+  }
+  $textRule = in_array($type, ['text', 'textarea'], true) ? 'latin_arabic' : '';
+
+  echo '<div class="dynamic-field" data-field-name="' . h($name) . '" data-field-type="' . h($type) . '" data-text-rule="' . h($textRule) . '" data-visible-if-field="' . h($visibleIfField) . '" data-visible-if-operator="' . h($visibleIfOperator) . '" data-visible-if-value="' . h($visibleIfValue) . '">';
 
   echo '<label>' . h($label) . ($required ? ' *' : '') . '</label>';
   if ($type === 'textarea') {
-    echo '<textarea name="answers[' . h($name) . ']" rows="4"' . $requiredAttr . '>' . h($value) . '</textarea>';
+    echo '<textarea name="answers[' . h($name) . ']" rows="4"' . $requiredAttr . '>' . h((string)$value) . '</textarea>';
+    echo '</div>';
+    return;
+  }
+
+  if ($type === 'select') {
+    $options = is_array($field['options'] ?? null) ? $field['options'] : [];
+    echo '<select name="answers[' . h($name) . ']"' . $requiredAttr . '>';
+    echo '<option value="">Select...</option>';
+    foreach ($options as $option) {
+      $optionValue = (string)$option;
+      $selected = ((string)$value === $optionValue) ? ' selected' : '';
+      echo '<option value="' . h($optionValue) . '"' . $selected . '>' . h($optionValue) . '</option>';
+    }
+    echo '</select>';
+    echo '</div>';
+    return;
+  }
+
+  if ($type === 'radio') {
+    $options = is_array($field['options'] ?? null) ? $field['options'] : [];
+    foreach ($options as $option) {
+      $optionValue = (string)$option;
+      $checked = ((string)$value === $optionValue) ? ' checked' : '';
+      echo '<label><input type="radio" name="answers[' . h($name) . ']" value="' . h($optionValue) . '"' . $checked . $requiredAttr . '> ' . h($optionValue) . '</label>';
+    }
+    echo '</div>';
+    return;
+  }
+
+  if ($type === 'checkbox') {
+    $options = is_array($field['options'] ?? null) ? $field['options'] : [];
+    $selectedValues = is_array($value) ? array_map('strval', $value) : [];
+    foreach ($options as $option) {
+      $optionValue = (string)$option;
+      $checked = in_array($optionValue, $selectedValues, true) ? ' checked' : '';
+      echo '<label><input type="checkbox" name="answers[' . h($name) . '][]" value="' . h($optionValue) . '"' . $checked . '> ' . h($optionValue) . '</label>';
+    }
+    echo '</div>';
     return;
   }
 
   $inputType = in_array($type, ['text', 'number', 'email', 'date'], true) ? $type : 'text';
-  echo '<input name="answers[' . h($name) . ']" type="' . h($inputType) . '" value="' . h($value) . '"' . $requiredAttr . '>';
+  echo '<input name="answers[' . h($name) . ']" type="' . h($inputType) . '" value="' . h((string)$value) . '"' . $requiredAttr . '>';
+  echo '</div>';
 }
 
 function normalize_email(string $email): string
@@ -662,6 +1018,115 @@ try {
 $page = $_GET['page'] ?? 'home';
 $message = '';
 $error = '';
+
+if ($page === 'notification_inbox_receive') {
+  if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    json_response(405, ['ok' => false, 'error' => 'method_not_allowed']);
+  }
+
+  if (!$pdo) {
+    json_response(503, ['ok' => false, 'error' => 'database_unavailable']);
+  }
+
+  if (!notification_inbox_ready($pdo)) {
+    json_response(503, ['ok' => false, 'error' => 'notification_inbox_table_missing']);
+  }
+
+  $rawBody = file_get_contents('php://input');
+  $rawBody = is_string($rawBody) ? $rawBody : '';
+
+  $payload = json_decode($rawBody, true);
+  if (!is_array($payload)) {
+    $payload = ['_raw_body' => $rawBody];
+  }
+
+  $hmacCheck = notification_hmac_verification($config, $rawBody);
+  if (!($hmacCheck['ok'] ?? false)) {
+    $failedEventName = trim((string)($payload['event'] ?? 'unknown'));
+    $failedNotificationType = trim((string)($payload['notification_type'] ?? ''));
+    $failedCorrelationId = trim((string)($payload['correlation_id'] ?? ''));
+    $failedDeliveryRoute = trim((string)($payload['route'] ?? ''));
+    $failedHeaders = [
+      'content_type' => request_header_value('Content-Type'),
+      'x_tkif_signature' => request_header_value('X-TKIF-Signature'),
+      'x_tkif_timestamp' => request_header_value('X-TKIF-Timestamp'),
+    ];
+
+    $failedInsert = $pdo->prepare(
+      'INSERT INTO notification_inbox (tenant_id, application_id, event_name, notification_type, correlation_id, delivery_route, auth_valid, source_ip, user_agent, headers_json, payload_json, status, error_message)
+       VALUES (NULL, NULL, ?, ?, ?, ?, 0, ?, ?, ?, ?, "failed", ?)'
+    );
+    $failedInsert->execute([
+      $failedEventName,
+      $failedNotificationType !== '' ? $failedNotificationType : null,
+      $failedCorrelationId !== '' ? $failedCorrelationId : null,
+      $failedDeliveryRoute !== '' ? $failedDeliveryRoute : null,
+      trim((string)($_SERVER['REMOTE_ADDR'] ?? '')) ?: null,
+      trim((string)($_SERVER['HTTP_USER_AGENT'] ?? '')) ?: null,
+      json_encode($failedHeaders, JSON_UNESCAPED_UNICODE),
+      json_encode($payload, JSON_UNESCAPED_UNICODE),
+      (string)($hmacCheck['error'] ?? 'invalid_signature'),
+    ]);
+
+    json_response(401, ['ok' => false, 'error' => (string)($hmacCheck['error'] ?? 'invalid_signature')]);
+  }
+
+  if (array_key_exists('_raw_body', $payload) && count($payload) === 1) {
+    json_response(400, ['ok' => false, 'error' => 'invalid_json_payload']);
+  }
+
+  $tenantId = isset($payload['tenant_id']) ? (int)$payload['tenant_id'] : 0;
+  if ($tenantId <= 0) {
+    $tenantId = null;
+  } else {
+    $tenantExists = $pdo->prepare('SELECT id FROM tenants WHERE id = ? LIMIT 1');
+    $tenantExists->execute([$tenantId]);
+    if (!$tenantExists->fetch()) {
+      $tenantId = null;
+    }
+  }
+
+  $applicationId = isset($payload['application_id']) ? (int)$payload['application_id'] : 0;
+  if ($applicationId <= 0) {
+    $applicationId = null;
+  } else {
+    $appExists = $pdo->prepare('SELECT id FROM applications WHERE id = ? LIMIT 1');
+    $appExists->execute([$applicationId]);
+    if (!$appExists->fetch()) {
+      $applicationId = null;
+    }
+  }
+
+  $eventName = trim((string)($payload['event'] ?? 'unknown'));
+  $notificationType = trim((string)($payload['notification_type'] ?? ''));
+  $correlationId = trim((string)($payload['correlation_id'] ?? ''));
+  $deliveryRoute = trim((string)($payload['route'] ?? ''));
+
+  $headerSnapshot = [
+    'content_type' => request_header_value('Content-Type'),
+    'x_tkif_signature_present' => request_header_value('X-TKIF-Signature') !== '' ? '1' : '0',
+    'x_tkif_timestamp_present' => request_header_value('X-TKIF-Timestamp') !== '' ? '1' : '0',
+  ];
+
+  $insert = $pdo->prepare(
+    'INSERT INTO notification_inbox (tenant_id, application_id, event_name, notification_type, correlation_id, delivery_route, auth_valid, source_ip, user_agent, headers_json, payload_json, status)
+     VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, "received")'
+  );
+  $insert->execute([
+    $tenantId,
+    $applicationId,
+    $eventName,
+    $notificationType !== '' ? $notificationType : null,
+    $correlationId !== '' ? $correlationId : null,
+    $deliveryRoute !== '' ? $deliveryRoute : null,
+    trim((string)($_SERVER['REMOTE_ADDR'] ?? '')) ?: null,
+    trim((string)($_SERVER['HTTP_USER_AGENT'] ?? '')) ?: null,
+    json_encode($headerSnapshot, JSON_UNESCAPED_UNICODE),
+    json_encode($payload, JSON_UNESCAPED_UNICODE),
+  ]);
+
+  json_response(202, ['ok' => true, 'notification_id' => (int)$pdo->lastInsertId()]);
+}
 
 if ($page === 'logout') {
     session_destroy();
@@ -1079,7 +1544,7 @@ if ($page === 'apply' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
       $_GET['user_id'] = (string)$user['id'];
     } else {
     $scholarshipId = (int)($_POST['scholarship_id'] ?? 0);
-    $stmt = $pdo->prepare('SELECT id, form_schema_json FROM scholarships WHERE id = ? AND tenant_id = ? AND status = "published" LIMIT 1');
+    $stmt = $pdo->prepare('SELECT id, tenant_id, title, form_schema_json FROM scholarships WHERE id = ? AND tenant_id = ? AND status = "published" LIMIT 1');
     $stmt->execute([$scholarshipId, $user['tenant_id']]);
     $scholarship = $stmt->fetch();
     if (!$scholarship) {
@@ -1090,6 +1555,10 @@ if ($page === 'apply' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
     $blacklist = blacklist_match($pdo, (int)$user['tenant_id'], (int)$user['id'], (string)$user['email']);
     if ($blacklist) {
       $reason = 'Blacklisted: ' . blacklist_reason_text($blacklist['reason'] ?? null);
+      $resolved = resolve_active_scholarship_schema($pdo, $scholarship);
+      $schema = $resolved['schema'];
+      $formVersion = (int)$resolved['version'];
+
       $stmt = $pdo->prepare('INSERT INTO applications (tenant_id, scholarship_id, student_id, answers_json, status, rejection_reason) VALUES (?, ?, ?, ?, "rejected", ?)');
       $stmt->execute([
         $user['tenant_id'],
@@ -1110,12 +1579,32 @@ if ($page === 'apply' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
         json_encode(['reason' => $reason], JSON_UNESCAPED_UNICODE),
       ]);
 
+      post_to_n8n($config, [
+        'event' => 'application_rejected_blacklist',
+        'application_id' => $applicationId,
+        'tenant_id' => $user['tenant_id'],
+        'scholarship_id' => $scholarshipId,
+        'scholarship_title' => (string)($scholarship['title'] ?? ''),
+        'student_email' => $user['email'],
+        'reason' => $reason,
+      ]);
+
+      snapshot_application_form(
+        $pdo,
+        (int)$user['tenant_id'],
+        $applicationId,
+        $scholarshipId,
+        $formVersion,
+        $schema,
+        ['blocked' => true]
+      );
+
       $error = 'Application auto-rejected because this registration is blacklisted.';
       $page = 'dashboard';
     } else {
-
-    $rawSchema = json_decode((string)$scholarship['form_schema_json'], true);
-    $schema = normalize_form_schema($rawSchema);
+    $resolved = resolve_active_scholarship_schema($pdo, $scholarship);
+    $schema = $resolved['schema'];
+    $formVersion = (int)$resolved['version'];
     if ($schema === []) {
       http_response_code(422);
       exit('Invalid scholarship form schema');
@@ -1125,7 +1614,46 @@ if ($page === 'apply' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
     $answers = [];
     foreach ($schema as $field) {
       $fieldName = (string)$field['name'];
+      $fieldType = (string)($field['type'] ?? 'text');
+
+      if (!field_is_visible($field, $answers)) {
+        $answers[$fieldName] = $fieldType === 'checkbox' ? [] : '';
+        continue;
+      }
+
+      if ($fieldType === 'checkbox') {
+        $raw = $answersInput[$fieldName] ?? [];
+        $values = is_array($raw) ? $raw : [$raw];
+        $allowedOptions = array_map('strval', (array)($field['options'] ?? []));
+        $clean = [];
+        foreach ($values as $value) {
+          $candidate = trim((string)$value);
+          if ($candidate !== '' && in_array($candidate, $allowedOptions, true)) {
+            $clean[] = $candidate;
+          }
+        }
+        $clean = array_values(array_unique($clean));
+        if ((bool)$field['required'] && $clean === []) {
+          $error = 'Please fill all required fields.';
+          $page = 'dashboard';
+          break;
+        }
+        $answers[$fieldName] = $clean;
+        continue;
+      }
+
       $value = trim((string)($answersInput[$fieldName] ?? ''));
+      if (in_array($fieldType, ['select', 'radio'], true)) {
+        $allowedOptions = array_map('strval', (array)($field['options'] ?? []));
+        if ($value !== '' && !in_array($value, $allowedOptions, true)) {
+          $value = '';
+        }
+      }
+      if (in_array($fieldType, ['text', 'textarea'], true) && !is_latin_or_arabic_text($value)) {
+        $error = 'Text fields accept only English/Latin or Arabic letters.';
+        $page = 'dashboard';
+        break;
+      }
       if ((bool)$field['required'] && $value === '') {
         $error = 'Please fill all required fields.';
         $page = 'dashboard';
@@ -1150,8 +1678,21 @@ if ($page === 'apply' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
         'event' => 'application_submitted',
         'application_id' => $applicationId,
         'tenant_id' => $user['tenant_id'],
+        'scholarship_id' => $scholarshipId,
+        'scholarship_title' => (string)($scholarship['title'] ?? ''),
         'student_email' => $user['email'],
+        'answers_json' => json_encode($answers, JSON_UNESCAPED_UNICODE),
       ]);
+
+      snapshot_application_form(
+        $pdo,
+        (int)$user['tenant_id'],
+        $applicationId,
+        $scholarshipId,
+        $formVersion,
+        $schema,
+        $answers
+      );
 
       if (smtp_is_ready($config)) {
         send_smtp_mail(
@@ -1291,11 +1832,12 @@ if ($page === 'blacklist_import' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pd
   if ($page === 'create_scholarship' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
     require_csrf();
     $user = require_login();
-    if ($user['role'] !== 'admin') {
+    if (!in_array((string)$user['role'], ['admin', 'it'], true)) {
       http_response_code(403);
       exit('Forbidden');
     }
 
+    $scholarshipId = (int)($_POST['scholarship_id'] ?? 0);
     $title = trim((string)($_POST['title'] ?? ''));
     $description = trim((string)($_POST['description'] ?? ''));
     $status = (string)($_POST['status'] ?? 'draft');
@@ -1308,20 +1850,141 @@ if ($page === 'blacklist_import' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pd
       $error = 'At least one valid form field is required.';
     } elseif (!in_array($status, ['draft', 'published', 'closed'], true)) {
       $error = 'Invalid scholarship status.';
-    } else {
-      $stmt = $pdo->prepare('INSERT INTO scholarships (tenant_id, title, description, status, form_schema_json, created_by) VALUES (?, ?, ?, ?, ?, ?)');
-      $stmt->execute([
-        $user['tenant_id'],
+    } elseif ($scholarshipId > 0) {
+      $existsStmt = $pdo->prepare('SELECT id FROM scholarships WHERE id = ? AND tenant_id = ? LIMIT 1');
+      $existsStmt->execute([$scholarshipId, $user['tenant_id']]);
+      if (!$existsStmt->fetch()) {
+        $error = 'Scholarship not found.';
+      }
+    }
+
+    if ($error === '' && $scholarshipId > 0) {
+      $updateStmt = $pdo->prepare('UPDATE scholarships SET title = ?, description = ?, status = ?, form_schema_json = ? WHERE id = ? AND tenant_id = ?');
+      $schemaJson = json_encode($schema, JSON_UNESCAPED_UNICODE);
+      $updateStmt->execute([
         $title,
         $description !== '' ? $description : null,
         $status,
-        json_encode($schema, JSON_UNESCAPED_UNICODE),
-        $user['id'],
+        $schemaJson,
+        $scholarshipId,
+        $user['tenant_id'],
       ]);
-      $message = 'Scholarship created successfully.';
+
+      if (scholarship_form_versioning_ready($pdo)) {
+        $maxStmt = $pdo->prepare('SELECT COALESCE(MAX(version_no), 0) AS max_version FROM scholarship_form_versions WHERE scholarship_id = ? AND tenant_id = ?');
+        $maxStmt->execute([$scholarshipId, $user['tenant_id']]);
+        $maxVersion = (int)($maxStmt->fetch()['max_version'] ?? 0);
+        $nextVersion = max(1, $maxVersion + 1);
+        $versionStatus = $status === 'published' ? 'published' : 'draft';
+
+        $insertVersion = $pdo->prepare(
+          'INSERT INTO scholarship_form_versions (scholarship_id, tenant_id, version_no, status, form_schema_json, created_by)
+           VALUES (?, ?, ?, ?, ?, ?)'
+        );
+        $insertVersion->execute([
+          $scholarshipId,
+          (int)$user['tenant_id'],
+          $nextVersion,
+          $versionStatus,
+          $schemaJson,
+          (int)$user['id'],
+        ]);
+
+        if ($versionStatus === 'published') {
+          $archiveStmt = $pdo->prepare(
+            'UPDATE scholarship_form_versions
+             SET status = "archived"
+             WHERE scholarship_id = ? AND tenant_id = ? AND version_no <> ? AND status = "published"'
+          );
+          $archiveStmt->execute([$scholarshipId, (int)$user['tenant_id'], $nextVersion]);
+        }
+
+        $message = 'Scholarship updated. New form version v' . (string)$nextVersion . ' saved.';
+      } else {
+        $message = 'Scholarship updated successfully.';
+      }
+      $page = 'dashboard';
+    } else {
+      if ($error === '') {
+        $schemaJson = json_encode($schema, JSON_UNESCAPED_UNICODE);
+        $stmt = $pdo->prepare('INSERT INTO scholarships (tenant_id, title, description, status, form_schema_json, created_by) VALUES (?, ?, ?, ?, ?, ?)');
+        $stmt->execute([
+          $user['tenant_id'],
+          $title,
+          $description !== '' ? $description : null,
+          $status,
+          $schemaJson,
+          $user['id'],
+        ]);
+        $scholarshipId = (int)$pdo->lastInsertId();
+
+        if (scholarship_form_versioning_ready($pdo)) {
+          $versionStmt = $pdo->prepare(
+            'INSERT INTO scholarship_form_versions (scholarship_id, tenant_id, version_no, status, form_schema_json, created_by)
+             VALUES (?, ?, 1, ?, ?, ?)'
+          );
+          $versionStmt->execute([
+            $scholarshipId,
+            (int)$user['tenant_id'],
+            $status === 'published' ? 'published' : 'draft',
+            $schemaJson,
+            (int)$user['id'],
+          ]);
+        }
+
+        $message = 'Scholarship created successfully.';
+        $page = 'dashboard';
+      }
+    }
+  }
+
+if ($page === 'publish_scholarship_version' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
+  require_csrf();
+  $user = require_login();
+  if (!in_array((string)$user['role'], ['admin', 'it'], true)) {
+    http_response_code(403);
+    exit('Forbidden');
+  }
+
+  $scholarshipId = (int)($_POST['scholarship_id'] ?? 0);
+  $versionNo = (int)($_POST['version_no'] ?? 0);
+
+  if ($scholarshipId <= 0 || $versionNo <= 0) {
+    $error = 'Invalid scholarship version selection.';
+    $page = 'dashboard';
+  } elseif (!scholarship_form_versioning_ready($pdo)) {
+    $error = 'Form versioning table is not available. Run migrations first.';
+    $page = 'dashboard';
+  } else {
+    $versionStmt = $pdo->prepare(
+      'SELECT form_schema_json FROM scholarship_form_versions
+       WHERE scholarship_id = ? AND tenant_id = ? AND version_no = ?
+       LIMIT 1'
+    );
+    $versionStmt->execute([$scholarshipId, (int)$user['tenant_id'], $versionNo]);
+    $versionRow = $versionStmt->fetch();
+
+    if (!$versionRow) {
+      $error = 'Selected version not found.';
+      $page = 'dashboard';
+    } else {
+      $schemaJson = (string)$versionRow['form_schema_json'];
+
+      $updateScholarship = $pdo->prepare('UPDATE scholarships SET status = "published", form_schema_json = ? WHERE id = ? AND tenant_id = ?');
+      $updateScholarship->execute([$schemaJson, $scholarshipId, (int)$user['tenant_id']]);
+
+      $archiveStmt = $pdo->prepare(
+        'UPDATE scholarship_form_versions
+         SET status = CASE WHEN version_no = ? THEN "published" WHEN status = "published" THEN "archived" ELSE status END
+         WHERE scholarship_id = ? AND tenant_id = ?'
+      );
+      $archiveStmt->execute([$versionNo, $scholarshipId, (int)$user['tenant_id']]);
+
+      $message = 'Published scholarship form version v' . (string)$versionNo . '.';
       $page = 'dashboard';
     }
   }
+}
 
 if ($page === 'decide' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
     require_csrf();
@@ -1351,10 +2014,23 @@ if ($page === 'decide' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
         json_encode(['reason' => $reason], JSON_UNESCAPED_UNICODE),
     ]);
 
+    $metaStmt = $pdo->prepare('SELECT a.scholarship_id, s.title AS scholarship_title, st.email AS student_email
+      FROM applications a
+      JOIN scholarships s ON s.id = a.scholarship_id
+      JOIN users st ON st.id = a.student_id
+      WHERE a.id = ? AND a.tenant_id = ? LIMIT 1');
+    $metaStmt->execute([$applicationId, $user['tenant_id']]);
+    $decisionMeta = $metaStmt->fetch() ?: [];
+
     post_to_n8n($config, [
         'event' => 'application_' . $status,
         'application_id' => $applicationId,
         'tenant_id' => $user['tenant_id'],
+      'scholarship_id' => (int)($decisionMeta['scholarship_id'] ?? 0),
+      'scholarship_title' => (string)($decisionMeta['scholarship_title'] ?? ''),
+      'student_email' => (string)($decisionMeta['student_email'] ?? ''),
+      'status' => $status,
+      'reason' => $reason,
         'by' => $user['email'],
     ]);
 
@@ -1491,6 +2167,206 @@ $user = current_user();
 </body>
 <script>
 (function () {
+  function initApplicationForms() {
+    const applyForms = document.querySelectorAll('form.scholarship-apply-form');
+    if (!applyForms.length) {
+      return;
+    }
+
+    function getFieldValue(form, fieldName) {
+      const radios = form.querySelectorAll('input[type="radio"][name="answers[' + fieldName + ']"]');
+      if (radios.length) {
+        const checked = form.querySelector('input[type="radio"][name="answers[' + fieldName + ']"]:checked');
+        return checked ? checked.value : '';
+      }
+
+      const checks = form.querySelectorAll('input[type="checkbox"][name="answers[' + fieldName + '][]"]');
+      if (checks.length) {
+        const out = [];
+        checks.forEach(function (cb) {
+          if (cb.checked) {
+            out.push(cb.value);
+          }
+        });
+        return out;
+      }
+
+      const input = form.querySelector('[name="answers[' + fieldName + ']"]');
+      return input ? input.value : '';
+    }
+
+    function setFieldValue(form, fieldName, value) {
+      const radios = form.querySelectorAll('input[type="radio"][name="answers[' + fieldName + ']"]');
+      if (radios.length) {
+        radios.forEach(function (r) {
+          r.checked = String(value) === r.value;
+        });
+        return;
+      }
+
+      const checks = form.querySelectorAll('input[type="checkbox"][name="answers[' + fieldName + '][]"]');
+      if (checks.length) {
+        const values = Array.isArray(value) ? value.map(String) : [];
+        checks.forEach(function (cb) {
+          cb.checked = values.includes(cb.value);
+        });
+        return;
+      }
+
+      const input = form.querySelector('[name="answers[' + fieldName + ']"]');
+      if (input) {
+        input.value = typeof value === 'string' ? value : '';
+      }
+    }
+
+    function isVisibleByCondition(actual, operator, value) {
+      if (!operator || !value) {
+        return true;
+      }
+
+      if (Array.isArray(actual)) {
+        if (operator === 'contains' || operator === 'equals') {
+          return actual.includes(value);
+        }
+        if (operator === 'not_equals') {
+          return !actual.includes(value);
+        }
+        return false;
+      }
+
+      const actualStr = String(actual || '').trim();
+      if (operator === 'equals') {
+        return actualStr === value;
+      }
+      if (operator === 'not_equals') {
+        return actualStr !== value;
+      }
+      if (operator === 'contains') {
+        return actualStr.indexOf(value) !== -1;
+      }
+      if (['gt', 'gte', 'lt', 'lte'].includes(operator)) {
+        const a = Number(actualStr);
+        const b = Number(value);
+        if (Number.isNaN(a) || Number.isNaN(b)) {
+          return false;
+        }
+        if (operator === 'gt') return a > b;
+        if (operator === 'gte') return a >= b;
+        if (operator === 'lt') return a < b;
+        return a <= b;
+      }
+      return true;
+    }
+
+    function isLatinArabicText(value) {
+      const trimmed = String(value || '').trim();
+      if (!trimmed) {
+        return true;
+      }
+      try {
+        return /^[\p{Script=Latin}\p{Script=Arabic}\p{M}\s'\-]+$/u.test(trimmed);
+      } catch (e) {
+        return true;
+      }
+    }
+
+    applyForms.forEach(function (form) {
+      const scholarshipId = form.getAttribute('data-scholarship-id') || '0';
+      const draftKey = 'scholarship_form_draft_' + scholarshipId;
+
+      function updateVisibility() {
+        form.querySelectorAll('.dynamic-field').forEach(function (wrapper) {
+          const dependsOn = (wrapper.getAttribute('data-visible-if-field') || '').trim();
+          const operator = (wrapper.getAttribute('data-visible-if-operator') || '').trim();
+          const value = (wrapper.getAttribute('data-visible-if-value') || '').trim();
+          if (!dependsOn || !operator || !value) {
+            wrapper.style.display = '';
+            wrapper.querySelectorAll('input,select,textarea').forEach(function (el) {
+              el.disabled = false;
+            });
+            return;
+          }
+
+          const actual = getFieldValue(form, dependsOn);
+          const visible = isVisibleByCondition(actual, operator, value);
+
+          wrapper.style.display = visible ? '' : 'none';
+          wrapper.querySelectorAll('input,select,textarea').forEach(function (el) {
+            el.disabled = !visible;
+          });
+        });
+      }
+
+      function validateTextRules() {
+        let isValid = true;
+        form.querySelectorAll('.dynamic-field').forEach(function (wrapper) {
+          if (wrapper.style.display === 'none') {
+            return;
+          }
+          const textRule = (wrapper.getAttribute('data-text-rule') || '').trim();
+          if (textRule !== 'latin_arabic') {
+            return;
+          }
+          const fieldName = wrapper.getAttribute('data-field-name') || '';
+          if (!fieldName) {
+            return;
+          }
+          const value = getFieldValue(form, fieldName);
+          if (!isLatinArabicText(Array.isArray(value) ? value.join(' ') : value)) {
+            isValid = false;
+          }
+        });
+        return isValid;
+      }
+
+      function saveDraft() {
+        const answers = {};
+        form.querySelectorAll('.dynamic-field').forEach(function (wrapper) {
+          const fieldName = wrapper.getAttribute('data-field-name') || '';
+          if (!fieldName) {
+            return;
+          }
+          answers[fieldName] = getFieldValue(form, fieldName);
+        });
+        localStorage.setItem(draftKey, JSON.stringify(answers));
+      }
+
+      const rawDraft = localStorage.getItem(draftKey);
+      if (rawDraft) {
+        try {
+          const draft = JSON.parse(rawDraft);
+          if (draft && typeof draft === 'object') {
+            Object.keys(draft).forEach(function (fieldName) {
+              setFieldValue(form, fieldName, draft[fieldName]);
+            });
+          }
+        } catch (e) {
+          localStorage.removeItem(draftKey);
+        }
+      }
+
+      updateVisibility();
+
+      form.addEventListener('change', function () {
+        updateVisibility();
+        saveDraft();
+      });
+      form.addEventListener('keyup', function () {
+        saveDraft();
+      });
+      form.addEventListener('submit', function (event) {
+        if (!validateTextRules()) {
+          window.alert('Text fields accept only English/Latin or Arabic letters.');
+          event.preventDefault();
+          return;
+        }
+        localStorage.removeItem(draftKey);
+      });
+    });
+  }
+
+  initApplicationForms();
+
   const form = document.getElementById('create-scholarship-form');
   if (!form) {
     return;
@@ -1499,6 +2375,12 @@ $user = current_user();
   const container = document.getElementById('fields-builder');
   const hiddenSchema = document.getElementById('form_schema_json');
   const addBtn = document.getElementById('add-field-btn');
+  const scholarshipIdInput = document.getElementById('scholarship_id');
+  const titleInput = document.getElementById('scholarship_title_input');
+  const descriptionInput = document.getElementById('scholarship_description_input');
+  const statusInput = document.getElementById('scholarship_status_input');
+  const modeLabel = document.getElementById('scholarship-editor-mode');
+  const resetBtn = document.getElementById('reset-scholarship-editor');
 
   function fieldRow(defaults) {
     const row = document.createElement('div');
@@ -1512,11 +2394,34 @@ $user = current_user();
         '<option value="number">number</option>' +
         '<option value="email">email</option>' +
         '<option value="date">date</option>' +
+        '<option value="select">select</option>' +
+        '<option value="radio">radio</option>' +
+        '<option value="checkbox">checkbox</option>' +
       '</select>' +
+      '<input placeholder="Options (comma separated)" class="f-options" value="' + ((defaults.options || []).join(', ')) + '">' +
+      '<input placeholder="Show when field (optional)" class="f-visible-if-field" value="' + ((defaults.visible_if && defaults.visible_if.field) || '') + '">' +
+      '<select class="f-visible-if-operator">' +
+        '<option value="equals">equals</option>' +
+        '<option value="not_equals">not equals</option>' +
+        '<option value="contains">contains</option>' +
+        '<option value="gt">greater than</option>' +
+        '<option value="gte">greater or equal</option>' +
+        '<option value="lt">less than</option>' +
+        '<option value="lte">less or equal</option>' +
+      '</select>' +
+      '<input placeholder="... condition value" class="f-visible-if-value" value="' + ((defaults.visible_if && (defaults.visible_if.value || defaults.visible_if.equals)) || '') + '">' +
       '<label><input type="checkbox" class="f-required"> Required</label>' +
       '<button type="button" class="btn remove-field">Remove</button>';
     row.querySelector('.f-type').value = defaults.type || 'text';
     row.querySelector('.f-required').checked = !!defaults.required;
+    row.querySelector('.f-visible-if-operator').value = (defaults.visible_if && (defaults.visible_if.operator || 'equals')) || 'equals';
+
+    function syncOptionsVisibility() {
+      const type = row.querySelector('.f-type').value;
+      const optionsInput = row.querySelector('.f-options');
+      optionsInput.style.display = ['select', 'radio', 'checkbox'].includes(type) ? '' : 'none';
+    }
+
     row.querySelector('.remove-field').addEventListener('click', function () {
       row.remove();
       syncSchema();
@@ -1525,7 +2430,39 @@ $user = current_user();
       el.addEventListener('change', syncSchema);
       el.addEventListener('keyup', syncSchema);
     });
+    row.querySelector('.f-type').addEventListener('change', syncOptionsVisibility);
+    syncOptionsVisibility();
     return row;
+  }
+
+  function renderSchemaRows(schema) {
+    container.innerHTML = '';
+    if (!Array.isArray(schema) || schema.length === 0) {
+      container.appendChild(fieldRow({ name: 'full_name', label: 'Full Name', type: 'text', required: true }));
+      syncSchema();
+      return;
+    }
+
+    schema.forEach(function (field) {
+      container.appendChild(fieldRow({
+        name: field.name || '',
+        label: field.label || '',
+        type: field.type || 'text',
+        required: !!field.required,
+        options: Array.isArray(field.options) ? field.options : [],
+        visible_if: (field.visible_if && typeof field.visible_if === 'object') ? field.visible_if : null
+      }));
+    });
+    syncSchema();
+  }
+
+  function resetEditor() {
+    if (scholarshipIdInput) scholarshipIdInput.value = '0';
+    if (titleInput) titleInput.value = '';
+    if (descriptionInput) descriptionInput.value = '';
+    if (statusInput) statusInput.value = 'draft';
+    if (modeLabel) modeLabel.innerHTML = '<strong>Mode:</strong> Create new scholarship';
+    renderSchemaRows([]);
   }
 
   function syncSchema() {
@@ -1534,9 +2471,24 @@ $user = current_user();
       const name = row.querySelector('.f-name').value.trim();
       const label = row.querySelector('.f-label').value.trim();
       const type = row.querySelector('.f-type').value;
+      const optionsRaw = row.querySelector('.f-options').value;
       const required = row.querySelector('.f-required').checked;
       if (name && label) {
-        schema.push({ name: name, label: label, type: type, required: required });
+        const field = { name: name, label: label, type: type, required: required };
+        if (['select', 'radio', 'checkbox'].includes(type)) {
+          field.options = optionsRaw.split(',').map(function (opt) {
+            return opt.trim();
+          }).filter(function (opt) {
+            return opt !== '';
+          });
+        }
+        const visibleIfField = row.querySelector('.f-visible-if-field').value.trim();
+        const visibleIfOperator = row.querySelector('.f-visible-if-operator').value;
+        const visibleIfValue = row.querySelector('.f-visible-if-value').value.trim();
+        if (visibleIfField && visibleIfValue) {
+          field.visible_if = { field: visibleIfField, operator: visibleIfOperator, value: visibleIfValue };
+        }
+        schema.push(field);
       }
     });
     hiddenSchema.value = JSON.stringify(schema);
@@ -1547,8 +2499,37 @@ $user = current_user();
     syncSchema();
   });
 
-  container.appendChild(fieldRow({ name: 'full_name', label: 'Full Name', type: 'text', required: true }));
-  syncSchema();
+  if (resetBtn) {
+    resetBtn.addEventListener('click', resetEditor);
+  }
+
+  document.querySelectorAll('.load-scholarship-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      const scholarshipId = btn.getAttribute('data-id') || '0';
+      const title = btn.getAttribute('data-title') || '';
+      const description = btn.getAttribute('data-description') || '';
+      const status = btn.getAttribute('data-status') || 'draft';
+      const rawSchema = btn.getAttribute('data-schema') || '[]';
+
+      let schema = [];
+      try {
+        schema = JSON.parse(rawSchema);
+      } catch (e) {
+        schema = [];
+      }
+
+      if (scholarshipIdInput) scholarshipIdInput.value = scholarshipId;
+      if (titleInput) titleInput.value = title;
+      if (descriptionInput) descriptionInput.value = description;
+      if (statusInput) statusInput.value = status;
+      if (modeLabel) modeLabel.innerHTML = '<strong>Mode:</strong> Editing scholarship #' + scholarshipId + ' (new version will be saved)';
+
+      renderSchemaRows(schema);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  });
+
+  resetEditor();
 })();
 </script>
 </html>

@@ -42,6 +42,11 @@ return [
         'api_key' => env('N8N_API_KEY', ''),
         'submit_hook' => env('N8N_WEBHOOK_SUBMIT', '/webhook/scholarship-submit'),
     ],
+    'notifications' => [
+        'internal_endpoint' => env('INTERNAL_NOTIFICATION_ENDPOINT', 'http://localhost:8080/?page=notification_inbox_receive'),
+        'internal_secret' => env('INTERNAL_NOTIFICATION_SECRET', ''),
+        'hmac_tolerance_seconds' => (int)env('INTERNAL_NOTIFICATION_HMAC_TOLERANCE_SECONDS', '300'),
+    ],
     'smtp' => [
         'enabled' => env('SMTP_ENABLED', 'false') === 'true',
         'host' => env('SMTP_HOST', ''),

@@ -67,6 +67,38 @@ CREATE TABLE IF NOT EXISTS applications (
   CONSTRAINT fk_app_student FOREIGN KEY (student_id) REFERENCES users(id)
 );
 
+CREATE TABLE IF NOT EXISTS scholarship_form_versions (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  scholarship_id BIGINT UNSIGNED NOT NULL,
+  tenant_id BIGINT UNSIGNED NOT NULL,
+  version_no INT UNSIGNED NOT NULL,
+  status ENUM('draft','published','archived') NOT NULL DEFAULT 'draft',
+  form_schema_json JSON NOT NULL,
+  created_by BIGINT UNSIGNED NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_scholarship_version (scholarship_id, version_no),
+  INDEX idx_form_versions_tenant (tenant_id, scholarship_id, version_no),
+  CONSTRAINT fk_form_versions_scholarship FOREIGN KEY (scholarship_id) REFERENCES scholarships(id),
+  CONSTRAINT fk_form_versions_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+  CONSTRAINT fk_form_versions_creator FOREIGN KEY (created_by) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS application_form_snapshots (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  application_id BIGINT UNSIGNED NOT NULL,
+  tenant_id BIGINT UNSIGNED NOT NULL,
+  scholarship_id BIGINT UNSIGNED NOT NULL,
+  form_version_no INT UNSIGNED NOT NULL,
+  form_schema_json JSON NOT NULL,
+  answers_json JSON NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_snapshot_application (application_id),
+  INDEX idx_snapshots_tenant_scholarship (tenant_id, scholarship_id, form_version_no),
+  CONSTRAINT fk_snapshot_application FOREIGN KEY (application_id) REFERENCES applications(id),
+  CONSTRAINT fk_snapshot_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+  CONSTRAINT fk_snapshot_scholarship FOREIGN KEY (scholarship_id) REFERENCES scholarships(id)
+);
+
 CREATE TABLE IF NOT EXISTS audit_logs (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   tenant_id BIGINT UNSIGNED NOT NULL,
@@ -131,4 +163,28 @@ CREATE TABLE IF NOT EXISTS user_profiles (
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   CONSTRAINT fk_profiles_user FOREIGN KEY (user_id) REFERENCES users(id),
   UNIQUE KEY uq_profile_user (user_id)
+);
+
+CREATE TABLE IF NOT EXISTS notification_inbox (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  tenant_id BIGINT UNSIGNED NULL,
+  application_id BIGINT UNSIGNED NULL,
+  event_name VARCHAR(120) NOT NULL,
+  notification_type VARCHAR(120) NULL,
+  correlation_id VARCHAR(190) NULL,
+  delivery_route VARCHAR(120) NULL,
+  auth_valid TINYINT(1) NOT NULL DEFAULT 0,
+  source_ip VARCHAR(45) NULL,
+  user_agent VARCHAR(255) NULL,
+  headers_json JSON NULL,
+  payload_json JSON NOT NULL,
+  status ENUM('received','processed','failed') NOT NULL DEFAULT 'received',
+  error_message VARCHAR(255) NULL,
+  received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  processed_at DATETIME NULL,
+  INDEX idx_notification_received_at (received_at),
+  INDEX idx_notification_tenant_event (tenant_id, event_name),
+  INDEX idx_notification_correlation (correlation_id),
+  CONSTRAINT fk_notification_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+  CONSTRAINT fk_notification_application FOREIGN KEY (application_id) REFERENCES applications(id)
 );

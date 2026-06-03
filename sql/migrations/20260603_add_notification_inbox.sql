@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS notification_inbox (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  tenant_id BIGINT UNSIGNED NULL,
+  application_id BIGINT UNSIGNED NULL,
+  event_name VARCHAR(120) NOT NULL,
+  notification_type VARCHAR(120) NULL,
+  correlation_id VARCHAR(190) NULL,
+  delivery_route VARCHAR(120) NULL,
+  auth_valid TINYINT(1) NOT NULL DEFAULT 0,
+  source_ip VARCHAR(45) NULL,
+  user_agent VARCHAR(255) NULL,
+  headers_json JSON NULL,
+  payload_json JSON NOT NULL,
+  status ENUM('received','processed','failed') NOT NULL DEFAULT 'received',
+  error_message VARCHAR(255) NULL,
+  received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  processed_at DATETIME NULL,
+  INDEX idx_notification_received_at (received_at),
+  INDEX idx_notification_tenant_event (tenant_id, event_name),
+  INDEX idx_notification_correlation (correlation_id),
+  CONSTRAINT fk_notification_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+  CONSTRAINT fk_notification_application FOREIGN KEY (application_id) REFERENCES applications(id)
+);

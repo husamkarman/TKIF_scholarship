@@ -55,6 +55,29 @@ This repository is a local starter for:
    - `n8n/workflows/scholarship-submit.json`
 4. Activate workflow
 
+### Internal Notifications (No External Webhook Service)
+Use your own app endpoint instead of third-party webhook capture sites.
+
+1. Apply notification inbox migration:
+   - `mysql -u root -p < sql/migrations/20260603_add_notification_inbox.sql`
+2. Set `.env` values:
+   - `INTERNAL_NOTIFICATION_ENDPOINT=http://localhost:8080/?page=notification_inbox_receive`
+   - `INTERNAL_NOTIFICATION_SECRET=<strong-random-secret>`
+   - `INTERNAL_NOTIFICATION_HMAC_TOLERANCE_SECONDS=300`
+3. Start n8n with internal dispatch targets:
+   - `N8N_NOTIFICATION_WEBHOOK_URL=http://localhost:8080/?page=notification_inbox_receive`
+   - `N8N_ESCALATION_WEBHOOK_URL=http://localhost:8080/?page=notification_inbox_receive`
+   - `INTERNAL_NOTIFICATION_SECRET=<same-secret-as-app>`
+
+Security behavior:
+- n8n sends signed headers: `X-TKIF-Timestamp` and `X-TKIF-Signature`.
+- App verifies `sha256=HMAC(secret, timestamp + '.' + rawBody)` and rejects invalid/expired signatures.
+
+Admin/IT can monitor received notification events from Dashboard -> Internal Notification Inbox.
+
+n8n workflow status:
+- Step 8 implemented (`n8n/workflows/scholarship-submit.json`) with submission/decision/blacklist routing and escalation timer.
+
 ## Next Build Step
 - Add Google auth integration.
 - Add WhatsApp/SMS providers when keys are available.
