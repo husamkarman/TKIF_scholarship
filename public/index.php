@@ -1332,6 +1332,7 @@ try {
 $page = $_GET['page'] ?? 'home';
 $message = '';
 $error = '';
+$verifyChallengeMeta = null;
 $registerOld = [
   'full_name' => '',
   'email' => '',
@@ -2595,6 +2596,13 @@ if ($page === 'decide' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
     $page = 'dashboard';
 }
 
+if ($page === 'verify_email' && $pdo) {
+  $pendingUserId = (int)($_SESSION['pending_email_verification_user_id'] ?? 0);
+  if ($pendingUserId > 0) {
+    $verifyChallengeMeta = email_verification_latest_pending_challenge($pdo, $pendingUserId);
+  }
+}
+
 $user = current_user();
 ?>
 <!doctype html>
@@ -2702,8 +2710,16 @@ $user = current_user();
       <?php endif; ?>
 
     <?php elseif ($page === 'verify_email'): ?>
+      <?php
+        $verifyExpiresTs = (int)($verifyChallengeMeta['expires_at_ts'] ?? 0);
+        $verifyCreatedTs = (int)($verifyChallengeMeta['created_at_ts'] ?? 0);
+        $resendCooldown = email_verification_resend_cooldown_seconds($config);
+      ?>
       <h2>Verify Email</h2>
       <p>Account: <strong><?= h((string)($_SESSION['pending_email_verification_email'] ?? '')) ?></strong></p>
+      <?php if ($verifyExpiresTs > 0): ?>
+        <p id="verify-expiry-timer" data-expires-at="<?= h((string)$verifyExpiresTs) ?>">Code expires in --:--</p>
+      <?php endif; ?>
 
       <?php if (email_verification_method($config) === 'code'): ?>
         <form method="post" action="<?= h(app_route('verify_email')) ?>">
@@ -2721,7 +2737,14 @@ $user = current_user();
       <form method="post" action="<?= h(app_route('verify_email')) ?>" style="margin-top: 10px;">
         <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
         <input type="hidden" name="action" value="resend">
-        <button class="btn" type="submit">Resend Verification</button>
+        <button
+          class="btn"
+          type="submit"
+          id="resend-verification-btn"
+          data-created-at="<?= h((string)$verifyCreatedTs) ?>"
+          data-cooldown-seconds="<?= h((string)$resendCooldown) ?>"
+        >Resend Verification</button>
+        <span id="resend-cooldown-text"></span>
         <a class="btn" href="<?= h(app_route('login')) ?>">Back to Login</a>
       </form>
 
@@ -3127,6 +3150,53 @@ $user = current_user();
   });
 
   resetEditor();
+})();
+
+(function () {
+  const expiryEl = document.getElementById('verify-expiry-timer');
+  if (expiryEl) {
+    const expiresAt = Number(expiryEl.getAttribute('data-expires-at') || '0');
+    const updateExpiry = function () {
+      const now = Math.floor(Date.now() / 1000);
+      const remaining = Math.max(0, expiresAt - now);
+      const mm = String(Math.floor(remaining / 60)).padStart(2, '0');
+      const ss = String(remaining % 60).padStart(2, '0');
+      expiryEl.textContent = remaining > 0
+        ? ('Code expires in ' + mm + ':' + ss)
+        : 'Code expired. Request a new code.';
+    };
+    updateExpiry();
+    setInterval(updateExpiry, 1000);
+  }
+
+  const resendBtn = document.getElementById('resend-verification-btn');
+  const resendText = document.getElementById('resend-cooldown-text');
+  if (!resendBtn || !resendText) {
+    return;
+  }
+
+  const createdAt = Number(resendBtn.getAttribute('data-created-at') || '0');
+  const cooldown = Number(resendBtn.getAttribute('data-cooldown-seconds') || '0');
+  if (createdAt <= 0 || cooldown <= 0) {
+    return;
+  }
+
+  const updateCooldown = function () {
+    const now = Math.floor(Date.now() / 1000);
+    const unlockAt = createdAt + cooldown;
+    const remaining = unlockAt - now;
+
+    if (remaining > 0) {
+      resendBtn.disabled = true;
+      resendText.textContent = ' Resend available in ' + remaining + 's';
+    } else {
+      resendBtn.disabled = false;
+      resendText.textContent = '';
+    }
+  };
+
+  updateCooldown();
+  setInterval(updateCooldown, 1000);
 })();
 </script>
 </html>

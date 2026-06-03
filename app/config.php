@@ -57,7 +57,8 @@ return [
         'enabled' => env('EMAIL_VERIFICATION_ENABLED', 'true') === 'true',
         'method' => env('EMAIL_VERIFICATION_METHOD', 'code'),
         'code_length' => (int)env('EMAIL_VERIFICATION_CODE_LENGTH', '6'),
-        'ttl_minutes' => (int)env('EMAIL_VERIFICATION_TTL_MINUTES', '15'),
+        'ttl_minutes' => (int)env('EMAIL_VERIFICATION_TTL_MINUTES', '3'),
+        'resend_cooldown_seconds' => (int)env('EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS', '30'),
         'require_for_login' => env('EMAIL_VERIFICATION_REQUIRE_FOR_LOGIN', 'true') === 'true',
     ],
     'smtp' => [

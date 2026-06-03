@@ -13,6 +13,16 @@ function email_verification_method(array $config): string
     return in_array($method, ['code', 'link'], true) ? $method : 'code';
 }
 
+function email_verification_ttl_minutes(array $config): int
+{
+    return max(1, min(60, (int)($config['email_verification']['ttl_minutes'] ?? 3)));
+}
+
+function email_verification_resend_cooldown_seconds(array $config): int
+{
+    return max(0, min(600, (int)($config['email_verification']['resend_cooldown_seconds'] ?? 30)));
+}
+
 function email_verification_ready(array $config): bool
 {
     if (!email_verification_enabled($config)) {
@@ -43,7 +53,7 @@ function email_verification_issue(PDO $pdo, array $config, array $user, string $
     }
 
     $method = email_verification_method($config);
-    $ttlMinutes = max(1, (int)($config['email_verification']['ttl_minutes'] ?? 15));
+    $ttlMinutes = email_verification_ttl_minutes($config);
 
     $clearPending = $pdo->prepare('UPDATE email_verification_challenges SET consumed_at = NOW() WHERE user_id = ? AND consumed_at IS NULL');
     $clearPending->execute([(int)$user['id']]);
@@ -116,6 +126,33 @@ function email_verification_issue(PDO $pdo, array $config, array $user, string $
     }
 
     return ['ok' => true, 'method' => 'link'];
+}
+
+function email_verification_latest_pending_challenge(PDO $pdo, int $userId): ?array
+{
+    $stmt = $pdo->prepare(
+        'SELECT id, created_at, expires_at
+         FROM email_verification_challenges
+         WHERE user_id = ? AND consumed_at IS NULL
+         ORDER BY id DESC
+         LIMIT 1'
+    );
+    $stmt->execute([$userId]);
+    $row = $stmt->fetch();
+    if (!$row) {
+        return null;
+    }
+
+    $createdTs = strtotime((string)$row['created_at']);
+    $expiresTs = strtotime((string)$row['expires_at']);
+
+    return [
+        'id' => (int)$row['id'],
+        'created_at' => (string)$row['created_at'],
+        'expires_at' => (string)$row['expires_at'],
+        'created_at_ts' => $createdTs !== false ? $createdTs : 0,
+        'expires_at_ts' => $expiresTs !== false ? $expiresTs : 0,
+    ];
 }
 
 function email_verification_mark_verified(PDO $pdo, int $userId): void
