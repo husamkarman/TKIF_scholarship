@@ -1,0 +1,66 @@
+# TKIF Scholarship MVP Foundation
+
+This repository is a local starter for:
+- PHP + MySQL role-based scholarship portal
+- n8n webhook automation
+- Manual cPanel deployment path
+
+## Included
+- Student/Admin/Manager/IT login routing
+- Basic scholarship apply flow
+- Basic application approve/reject flow
+- n8n webhook trigger on submit and decision
+- Multi-tenant schema baseline (`tenant_id` model)
+
+## Quick Start (Local)
+1. Copy env file:
+   - `cp .env.example .env`
+2. Install PHP dependencies:
+   - `composer install`
+3. Create MySQL DB and import:
+   - `mysql -u root -p < sql/schema.sql`
+   - `mysql -u root -p < sql/seed.sql`
+4. Run PHP local server:
+   - `php -S localhost:8080 -t public`
+5. Open:
+   - `http://localhost:8080`
+6. Demo users (password: `Password123!`):
+   - `student@tkif.local`
+   - `admin@tkif.local`
+   - `manager@tkif.local`
+   - `it@tkif.local`
+
+## SMTP Setup (Secure)
+1. Set all SMTP values in `.env`.
+2. Keep `SMTP_PASSWORD` only in `.env` (never commit).
+3. Enable delivery by setting `SMTP_ENABLED=true`.
+4. Current app events that trigger email:
+   - Student application submitted
+   - Admin/Manager application decision (approved/rejected)
+
+## n8n Quick Start
+1. Start n8n:
+   - `docker compose -f docker-compose.n8n.yml up -d`
+2. Open n8n UI:
+   - `http://localhost:5678`
+3. Import workflow file:
+   - `n8n/workflows/scholarship-submit.json`
+4. Activate workflow
+
+## Next Build Step
+- Add OTP + Google/Microsoft auth integration.
+- Add WhatsApp/SMS providers when keys are available.
+
+## Blacklist (Step 4)
+1. Matching keys:
+   - `register_id` (mapped to user registration sequence id)
+   - normalized email (trim + case-insensitive)
+2. Blacklist effect:
+   - New applications are auto-rejected.
+   - Existing `submitted` and `in_review` applications are auto-rejected.
+3. Manual add:
+   - Admin/IT can add blacklist rows from dashboard quickly.
+4. Import file:
+   - Supported: `.csv`, `.xlsx`
+   - Required headers: `register_id,email,reason`
+   - `reason` is mandatory for compliance auditability.

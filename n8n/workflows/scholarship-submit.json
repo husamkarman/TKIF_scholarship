@@ -1,0 +1,77 @@
+{
+  "name": "Scholarship Submit MVP",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "scholarship-submit",
+        "httpMethod": "POST",
+        "responseMode": "onReceived"
+      },
+      "id": "Webhook_1",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "mode": "keepKeyMatches",
+        "values": {
+          "string": [
+            {
+              "name": "event",
+              "value": "={{$json.body.event}}"
+            },
+            {
+              "name": "application_id",
+              "value": "={{$json.body.application_id}}"
+            },
+            {
+              "name": "tenant_id",
+              "value": "={{$json.body.tenant_id}}"
+            }
+          ]
+        }
+      },
+      "id": "Set_1",
+      "name": "Normalize Payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "return [{json: {ok: true, message: 'MVP webhook received', input: $json}}];"
+      },
+      "id": "Function_1",
+      "name": "Acknowledge",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [680, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Payload": {
+      "main": [
+        [
+          {
+            "node": "Acknowledge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
