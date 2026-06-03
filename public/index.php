@@ -447,15 +447,14 @@ function issue_email_otp(PDO $pdo, array $config, array $user): bool
   }
 
   $ttlMinutes = max(1, (int)$config['otp']['ttl_minutes']);
-  $expiresAt = date('Y-m-d H:i:s', time() + ($ttlMinutes * 60));
 
-  $stmt = $pdo->prepare('INSERT INTO otp_codes (tenant_id, user_id, email, otp_hash, expires_at) VALUES (?, ?, ?, ?, ?)');
+  $stmt = $pdo->prepare('INSERT INTO otp_codes (tenant_id, user_id, email, otp_hash, expires_at) VALUES (?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL ? MINUTE))');
   $stmt->execute([
     (int)$user['tenant_id'],
     (int)$user['id'],
     (string)$user['email'],
     $hash,
-    $expiresAt,
+    $ttlMinutes,
   ]);
 
   return send_smtp_mail(
@@ -1591,7 +1590,12 @@ if ($page === 'register' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
                     $message = 'Account created. Use the verification link sent to your email.';
                   }
                 } else {
-                  $error = 'Account created, but verification email could not be sent yet. Use resend below.';
+                  $reason = trim((string)($issue['reason'] ?? ''));
+                  if ($reason !== '') {
+                    $error = 'Account created, but verification email could not be sent: ' . $reason . '. Use resend below.';
+                  } else {
+                    $error = 'Account created, but verification email could not be sent yet. Use resend below.';
+                  }
                 }
 
                 $page = 'verify_email';

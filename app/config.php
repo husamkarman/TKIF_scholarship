@@ -6,6 +6,11 @@ function env(string $key, ?string $default = null): ?string
 {
     static $vars = null;
 
+    $runtime = getenv($key);
+    if ($runtime !== false && $runtime !== '') {
+        return $runtime;
+    }
+
     if ($vars === null) {
         $vars = [];
         $envFile = dirname(__DIR__) . '/.env';
@@ -60,6 +65,7 @@ return [
         'host' => env('SMTP_HOST', ''),
         'port' => env('SMTP_PORT', ''),
         'encryption' => env('SMTP_ENCRYPTION', 'ssl'),
+        'auth' => env('SMTP_AUTH', 'true') === 'true',
         'username' => env('SMTP_USERNAME', ''),
         'password' => env('SMTP_PASSWORD', ''),
         'from_email' => env('SMTP_FROM_EMAIL', ''),

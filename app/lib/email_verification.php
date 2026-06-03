@@ -44,7 +44,6 @@ function email_verification_issue(PDO $pdo, array $config, array $user, string $
 
     $method = email_verification_method($config);
     $ttlMinutes = max(1, (int)($config['email_verification']['ttl_minutes'] ?? 15));
-    $expiresAt = date('Y-m-d H:i:s', time() + ($ttlMinutes * 60));
 
     $clearPending = $pdo->prepare('UPDATE email_verification_challenges SET consumed_at = NOW() WHERE user_id = ? AND consumed_at IS NULL');
     $clearPending->execute([(int)$user['id']]);
@@ -72,7 +71,7 @@ function email_verification_issue(PDO $pdo, array $config, array $user, string $
 
     $insert = $pdo->prepare(
         'INSERT INTO email_verification_challenges (user_id, email, channel, code_hash, token_hash, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?)'
+         VALUES (?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL ? MINUTE))'
     );
     $insert->execute([
         (int)$user['id'],
@@ -80,7 +79,7 @@ function email_verification_issue(PDO $pdo, array $config, array $user, string $
         $method,
         $codeHash,
         $tokenHash,
-        $expiresAt,
+        $ttlMinutes,
     ]);
 
     if ($method === 'code') {
@@ -93,7 +92,9 @@ function email_verification_issue(PDO $pdo, array $config, array $user, string $
         );
 
         if (!$sent) {
-            return ['ok' => false, 'reason' => 'Verification email could not be sent'];
+            $smtpError = trim(smtp_get_last_error());
+            $reason = $smtpError !== '' ? 'Verification email could not be sent (' . $smtpError . ')' : 'Verification email could not be sent';
+            return ['ok' => false, 'reason' => $reason];
         }
 
         return ['ok' => true, 'method' => 'code'];
@@ -109,7 +110,9 @@ function email_verification_issue(PDO $pdo, array $config, array $user, string $
     );
 
     if (!$sent) {
-        return ['ok' => false, 'reason' => 'Verification email could not be sent'];
+        $smtpError = trim(smtp_get_last_error());
+        $reason = $smtpError !== '' ? 'Verification email could not be sent (' . $smtpError . ')' : 'Verification email could not be sent';
+        return ['ok' => false, 'reason' => $reason];
     }
 
     return ['ok' => true, 'method' => 'link'];

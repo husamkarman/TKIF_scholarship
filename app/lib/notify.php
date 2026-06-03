@@ -5,6 +5,16 @@ declare(strict_types=1);
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
+function smtp_set_last_error(string $message): void
+{
+    $GLOBALS['tkif_smtp_last_error'] = $message;
+}
+
+function smtp_get_last_error(): string
+{
+    return (string)($GLOBALS['tkif_smtp_last_error'] ?? '');
+}
+
 function smtp_is_ready(array $config): bool
 {
     $smtp = $config['smtp'] ?? [];
@@ -24,11 +34,15 @@ function smtp_is_ready(array $config): bool
 
 function send_smtp_mail(array $config, string $toEmail, string $toName, string $subject, string $bodyHtml): bool
 {
+    smtp_set_last_error('');
+
     if (!smtp_is_ready($config)) {
+        smtp_set_last_error('SMTP is not fully configured');
         return false;
     }
 
     if (!class_exists(PHPMailer::class)) {
+        smtp_set_last_error('PHPMailer is not available');
         return false;
     }
 
@@ -39,9 +53,11 @@ function send_smtp_mail(array $config, string $toEmail, string $toName, string $
         $mail->isSMTP();
         $mail->Host = (string)$smtp['host'];
         $mail->Port = (int)$smtp['port'];
-        $mail->SMTPAuth = true;
-        $mail->Username = (string)$smtp['username'];
-        $mail->Password = (string)$smtp['password'];
+        $mail->SMTPAuth = ($smtp['auth'] ?? true) === true;
+        if ($mail->SMTPAuth) {
+            $mail->Username = (string)$smtp['username'];
+            $mail->Password = (string)$smtp['password'];
+        }
         $mail->Timeout = (int)$smtp['timeout'];
 
         $enc = strtolower(trim((string)$smtp['encryption']));
@@ -61,8 +77,17 @@ function send_smtp_mail(array $config, string $toEmail, string $toName, string $
         $mail->Body = $bodyHtml;
         $mail->AltBody = strip_tags($bodyHtml);
 
-        return $mail->send();
-    } catch (Exception) {
+        $sent = $mail->send();
+        if (!$sent) {
+            $error = trim((string)$mail->ErrorInfo);
+            smtp_set_last_error($error !== '' ? $error : 'Unknown SMTP send failure');
+        }
+        return $sent;
+    } catch (Exception $e) {
+        $mailError = trim((string)$mail->ErrorInfo);
+        $exError = trim($e->getMessage());
+        $combined = trim($mailError . ($mailError !== '' && $exError !== '' ? ' | ' : '') . $exError);
+        smtp_set_last_error($combined !== '' ? $combined : 'SMTP exception');
         return false;
     }
 }
