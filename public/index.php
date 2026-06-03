@@ -8,6 +8,7 @@ if (is_file(dirname(__DIR__) . '/vendor/autoload.php')) {
   require dirname(__DIR__) . '/vendor/autoload.php';
 }
 require dirname(__DIR__) . '/app/lib/notify.php';
+require dirname(__DIR__) . '/app/lib/email_verification.php';
 require dirname(__DIR__) . '/app/lib/profile.php';
 require dirname(__DIR__) . '/app/controllers/profile_controller.php';
 
@@ -131,8 +132,16 @@ function set_user_session(array $user): void
 function find_active_user_by_email(PDO $pdo, string $email): ?array
 {
   $normalized = normalize_email($email);
-  $stmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, password_hash FROM users WHERE LOWER(TRIM(email)) = ? AND is_active = 1 LIMIT 1');
+  $stmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, password_hash, email_verified_at FROM users WHERE LOWER(TRIM(email)) = ? AND is_active = 1 LIMIT 1');
   $stmt->execute([$normalized]);
+  $user = $stmt->fetch();
+  return $user ?: null;
+}
+
+function find_active_user_by_id(PDO $pdo, int $userId): ?array
+{
+  $stmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, password_hash, email_verified_at FROM users WHERE id = ? AND is_active = 1 LIMIT 1');
+  $stmt->execute([$userId]);
   $user = $stmt->fetch();
   return $user ?: null;
 }
@@ -369,7 +378,7 @@ function find_active_user_by_identity(PDO $pdo, string $provider, string $provid
   }
 
   $stmt = $pdo->prepare(
-    'SELECT u.id, u.tenant_id, u.full_name, u.email, u.role, u.password_hash
+    'SELECT u.id, u.tenant_id, u.full_name, u.email, u.role, u.password_hash, u.email_verified_at
      FROM user_identities i
      INNER JOIN users u ON u.id = i.user_id
      WHERE i.provider = ? AND i.provider_user_id = ? AND u.is_active = 1
@@ -624,7 +633,7 @@ function microsoft_extract_subject(?array $profile, ?array $tokenData): string
       return null;
     }
 
-    $insert = $pdo->prepare('INSERT INTO users (tenant_id, full_name, email, password_hash, role, is_active) VALUES (?, ?, ?, ?, ?, 1)');
+    $insert = $pdo->prepare('INSERT INTO users (tenant_id, full_name, email, password_hash, role, is_active, email_verified_at) VALUES (?, ?, ?, ?, ?, 1, NOW())');
     $insert->execute([
       (int)$tenant['id'],
       $fullName,
@@ -634,7 +643,7 @@ function microsoft_extract_subject(?array $profile, ?array $tokenData): string
     ]);
 
     $createdId = (int)$pdo->lastInsertId();
-    $select = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, password_hash FROM users WHERE id = ? LIMIT 1');
+    $select = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, password_hash, email_verified_at FROM users WHERE id = ? LIMIT 1');
     $select->execute([$createdId]);
     $newUser = $select->fetch();
     return $newUser ?: null;
@@ -721,7 +730,7 @@ function google_provision_user_if_allowed(PDO $pdo, array $config, string $email
     return null;
   }
 
-  $insert = $pdo->prepare('INSERT INTO users (tenant_id, full_name, email, password_hash, role, is_active) VALUES (?, ?, ?, ?, ?, 1)');
+  $insert = $pdo->prepare('INSERT INTO users (tenant_id, full_name, email, password_hash, role, is_active, email_verified_at) VALUES (?, ?, ?, ?, ?, 1, NOW())');
   $insert->execute([
     (int)$tenant['id'],
     $fullName,
@@ -731,7 +740,7 @@ function google_provision_user_if_allowed(PDO $pdo, array $config, string $email
   ]);
 
   $createdId = (int)$pdo->lastInsertId();
-  $select = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, password_hash FROM users WHERE id = ? LIMIT 1');
+  $select = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, password_hash, email_verified_at FROM users WHERE id = ? LIMIT 1');
   $select->execute([$createdId]);
   $newUser = $select->fetch();
   return $newUser ?: null;
@@ -1480,13 +1489,33 @@ if ($page === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
     $user = find_active_user_by_email($pdo, $email);
 
     if ($user && password_verify($password, $user['password_hash'])) {
-      ensure_user_profile_exists($pdo, (int)$user['id'], (string)$user['full_name']);
-      set_user_session($user);
+      if (email_verification_user_needs_verification($config, $user)) {
+        $_SESSION['pending_email_verification_user_id'] = (int)$user['id'];
+        $_SESSION['pending_email_verification_email'] = (string)$user['email'];
+
+        $issue = email_verification_issue($pdo, $config, $user, app_route('verify_email'));
+        if (($issue['ok'] ?? false) === true) {
+          if (($issue['method'] ?? 'code') === 'code') {
+            $message = 'Please verify your email with the code we sent.';
+          } else {
+            $message = 'Please verify your email using the link we sent.';
+          }
+        } else {
+          $error = (string)($issue['reason'] ?? 'Please verify your email before login.');
+        }
+
+        $page = 'verify_email';
+      } else {
+        ensure_user_profile_exists($pdo, (int)$user['id'], (string)$user['full_name']);
+        set_user_session($user);
         header('Location: ' . app_route('dashboard'));
         exit;
+      }
     }
 
-    $error = 'Invalid credentials';
+    if (!$user || !password_verify($password, $user['password_hash'])) {
+      $error = 'Invalid credentials';
+    }
 }
 
 if ($page === 'register' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
@@ -1530,33 +1559,131 @@ if ($page === 'register' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
           if ($passwordHash === false) {
             $error = 'Unable to process registration password.';
           } else {
-            $insert = $pdo->prepare('INSERT INTO users (tenant_id, full_name, email, password_hash, role, is_active) VALUES (?, ?, ?, ?, ?, 1)');
+            $emailVerifiedAt = email_verification_enabled($config) ? null : date('Y-m-d H:i:s');
+            $insert = $pdo->prepare('INSERT INTO users (tenant_id, full_name, email, password_hash, role, is_active, email_verified_at) VALUES (?, ?, ?, ?, ?, 1, ?)');
             $insert->execute([
               $tenantId,
               $fullName,
               $email,
               $passwordHash,
               $role,
+              $emailVerifiedAt,
             ]);
 
             $newUserId = (int)$pdo->lastInsertId();
-            $userStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, password_hash FROM users WHERE id = ? LIMIT 1');
+            $userStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, password_hash, email_verified_at FROM users WHERE id = ? LIMIT 1');
             $userStmt->execute([$newUserId]);
             $newUser = $userStmt->fetch();
             if (!$newUser) {
               $error = 'Registration succeeded but login bootstrap failed.';
             } else {
               ensure_user_profile_exists($pdo, (int)$newUser['id'], (string)$newUser['full_name']);
-              set_user_session($newUser);
+
+              if (email_verification_enabled($config)) {
+                $_SESSION['pending_email_verification_user_id'] = (int)$newUser['id'];
+                $_SESSION['pending_email_verification_email'] = (string)$newUser['email'];
+
+                $issue = email_verification_issue($pdo, $config, $newUser, app_route('verify_email'));
+                if (($issue['ok'] ?? false) === true) {
+                  if (($issue['method'] ?? 'code') === 'code') {
+                    $message = 'Account created. Enter the verification code sent to your email.';
+                  } else {
+                    $message = 'Account created. Use the verification link sent to your email.';
+                  }
+                } else {
+                  $error = 'Account created, but verification email could not be sent yet. Use resend below.';
+                }
+
+                $page = 'verify_email';
+              } else {
+                set_user_session($newUser);
+                header('Location: ' . app_route('dashboard'));
+                exit;
+              }
+            }
+          }
+        }
+      }
+
+      if ($page !== 'verify_email') {
+        $page = 'register';
+      }
+    }
+}
+
+if ($page === 'verify_email' && isset($_GET['token']) && $pdo) {
+  $token = trim((string)($_GET['token'] ?? ''));
+  if ($token === '') {
+    $error = 'Verification token is missing.';
+  } else {
+    $verifiedUserId = email_verification_verify_token($pdo, $token);
+    if ($verifiedUserId === null) {
+      $error = 'Verification link is invalid or expired.';
+    } else {
+      $user = find_active_user_by_id($pdo, $verifiedUserId);
+      if (!$user) {
+        $error = 'Account is unavailable.';
+      } else {
+        ensure_user_profile_exists($pdo, (int)$user['id'], (string)$user['full_name']);
+        set_user_session($user);
+        unset($_SESSION['pending_email_verification_user_id'], $_SESSION['pending_email_verification_email']);
+        header('Location: ' . app_route('dashboard'));
+        exit;
+      }
+    }
+  }
+}
+
+if ($page === 'verify_email' && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $pdo) {
+  require_csrf();
+  $pendingUserId = (int)($_SESSION['pending_email_verification_user_id'] ?? 0);
+
+  if ($pendingUserId <= 0) {
+    $error = 'No pending verification request. Please login again.';
+    $page = 'login';
+  } else {
+    $pendingUser = find_active_user_by_id($pdo, $pendingUserId);
+    if (!$pendingUser) {
+      $error = 'Account is unavailable.';
+      $page = 'login';
+    } else {
+      $action = trim((string)($_POST['action'] ?? 'verify_code'));
+      if ($action === 'resend') {
+        $issue = email_verification_issue($pdo, $config, $pendingUser, app_route('verify_email'));
+        if (($issue['ok'] ?? false) === true) {
+          $message = (($issue['method'] ?? 'code') === 'code')
+            ? 'A new verification code has been sent.'
+            : 'A new verification link has been sent.';
+        } else {
+          $error = (string)($issue['reason'] ?? 'Unable to resend verification right now.');
+        }
+      } else {
+        if (email_verification_method($config) !== 'code') {
+          $error = 'Use the verification link sent to your email.';
+        } else {
+          $code = trim((string)($_POST['verification_code'] ?? ''));
+          if ($code === '') {
+            $error = 'Enter the verification code.';
+          } elseif (!email_verification_verify_code($pdo, $pendingUserId, $code)) {
+            $error = 'Invalid or expired verification code.';
+          } else {
+            $user = find_active_user_by_id($pdo, $pendingUserId);
+            if (!$user) {
+              $error = 'Account is unavailable.';
+              $page = 'login';
+            } else {
+              ensure_user_profile_exists($pdo, (int)$user['id'], (string)$user['full_name']);
+              set_user_session($user);
+              unset($_SESSION['pending_email_verification_user_id'], $_SESSION['pending_email_verification_email']);
               header('Location: ' . app_route('dashboard'));
               exit;
             }
           }
         }
       }
-
-      $page = 'register';
+      $page = 'verify_email';
     }
+  }
 }
 
   if ($page === 'login_otp_request' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
@@ -1589,9 +1716,7 @@ if ($page === 'register' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
     } elseif (!verify_email_otp($pdo, $otpUserId, $code)) {
       $error = 'Invalid or expired OTP code.';
     } else {
-      $stmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, password_hash FROM users WHERE id = ? AND is_active = 1 LIMIT 1');
-      $stmt->execute([$otpUserId]);
-      $user = $stmt->fetch();
+      $user = find_active_user_by_id($pdo, $otpUserId);
       if (!$user) {
         $error = 'Account is unavailable.';
       } else {
@@ -2571,6 +2696,30 @@ $user = current_user();
         <hr>
         <p>New here? <a href="<?= h(app_route('register')) ?>">Create an account</a></p>
       <?php endif; ?>
+
+    <?php elseif ($page === 'verify_email'): ?>
+      <h2>Verify Email</h2>
+      <p>Account: <strong><?= h((string)($_SESSION['pending_email_verification_email'] ?? '')) ?></strong></p>
+
+      <?php if (email_verification_method($config) === 'code'): ?>
+        <form method="post" action="<?= h(app_route('verify_email')) ?>">
+          <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+          <input type="hidden" name="action" value="verify_code">
+          <label>Verification Code</label>
+          <input name="verification_code" type="text" inputmode="numeric" maxlength="10" required>
+          <br><br>
+          <button class="btn primary" type="submit">Verify Email</button>
+        </form>
+      <?php else: ?>
+        <p>Check your inbox and click the verification link to continue.</p>
+      <?php endif; ?>
+
+      <form method="post" action="<?= h(app_route('verify_email')) ?>" style="margin-top: 10px;">
+        <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+        <input type="hidden" name="action" value="resend">
+        <button class="btn" type="submit">Resend Verification</button>
+        <a class="btn" href="<?= h(app_route('login')) ?>">Back to Login</a>
+      </form>
 
     <?php elseif ($page === 'register'): ?>
       <h2>Create Account</h2>

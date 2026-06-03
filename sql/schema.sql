@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash VARCHAR(255) NOT NULL,
   role ENUM('student','admin','manager','it') NOT NULL,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
+  email_verified_at DATETIME NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uq_users_email_global (email),
   UNIQUE KEY uq_tenant_email (tenant_id, email),
@@ -140,6 +141,23 @@ CREATE TABLE IF NOT EXISTS otp_codes (
   CONSTRAINT fk_otp_user FOREIGN KEY (user_id) REFERENCES users(id),
   INDEX idx_otp_user_created (user_id, created_at),
   INDEX idx_otp_expires (expires_at)
+);
+
+CREATE TABLE IF NOT EXISTS email_verification_challenges (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  email VARCHAR(190) NOT NULL,
+  channel ENUM('code','link') NOT NULL,
+  code_hash VARCHAR(255) NULL,
+  token_hash CHAR(64) NULL,
+  expires_at DATETIME NOT NULL,
+  consumed_at DATETIME NULL,
+  attempts INT UNSIGNED NOT NULL DEFAULT 0,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_email_verification_user_created (user_id, created_at),
+  INDEX idx_email_verification_token (token_hash),
+  INDEX idx_email_verification_expires (expires_at),
+  CONSTRAINT fk_email_verification_user FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
 CREATE TABLE IF NOT EXISTS user_profiles (

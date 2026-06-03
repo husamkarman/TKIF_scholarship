@@ -48,6 +48,13 @@ return [
         'default_role' => env('REGISTRATION_DEFAULT_ROLE', 'student'),
         'default_tenant_code' => env('REGISTRATION_DEFAULT_TENANT_CODE', ''),
     ],
+    'email_verification' => [
+        'enabled' => env('EMAIL_VERIFICATION_ENABLED', 'true') === 'true',
+        'method' => env('EMAIL_VERIFICATION_METHOD', 'code'),
+        'code_length' => (int)env('EMAIL_VERIFICATION_CODE_LENGTH', '6'),
+        'ttl_minutes' => (int)env('EMAIL_VERIFICATION_TTL_MINUTES', '15'),
+        'require_for_login' => env('EMAIL_VERIFICATION_REQUIRE_FOR_LOGIN', 'true') === 'true',
+    ],
     'smtp' => [
         'enabled' => env('SMTP_ENABLED', 'false') === 'true',
         'host' => env('SMTP_HOST', ''),

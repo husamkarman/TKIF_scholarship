@@ -50,6 +50,25 @@ This repository is a local starter for:
    - `REGISTRATION_DEFAULT_ROLE=student`
    - `REGISTRATION_DEFAULT_TENANT_CODE=<optional-tenant-code>`
 3. If no `REGISTRATION_DEFAULT_TENANT_CODE` is set, the first active tenant is used.
+4. Email verification is enforced before first login when enabled.
+
+## Email Verification (Independent Module)
+Registration can require email verification using either a code or a magic link. The module is isolated in `app/lib/email_verification.php` so it can be replaced later without rewriting registration/login core flows.
+
+1. Apply migration:
+   - `mysql -u root -p < sql/migrations/20260603_add_email_verification.sql`
+2. Configure `.env`:
+   - `EMAIL_VERIFICATION_ENABLED=true|false`
+   - `EMAIL_VERIFICATION_METHOD=code|link`
+   - `EMAIL_VERIFICATION_CODE_LENGTH=6`
+   - `EMAIL_VERIFICATION_TTL_MINUTES=15`
+   - `EMAIL_VERIFICATION_REQUIRE_FOR_LOGIN=true|false`
+3. SMTP must be configured (`SMTP_ENABLED=true`) to deliver code/link emails.
+4. Flow:
+   - User registers.
+   - App sends verification code or link.
+   - User verifies at `/?page=verify_email`.
+   - User is allowed into dashboard after verification.
 
 ## Security Rotation (Step 1)
 1. Rotate exposed secrets at provider side first (SMTP, Microsoft, Google, DB, internal worker token).

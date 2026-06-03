@@ -33,11 +33,21 @@
 4. Optional fallback via CLI cron (if HTTP cron is restricted):
    - `* * * * * /usr/local/bin/php -r '$_SERVER["REQUEST_METHOD"]="POST"; $_GET["page"]="notification_worker_run"; $_POST["token"]="YOUR_WORKER_TOKEN"; include "/home/USER/public_html/public/index.php";' >/dev/null 2>&1`
 
+## Email Verification (Registration Gate)
+1. Ensure these `.env` values exist:
+   - `EMAIL_VERIFICATION_ENABLED=true`
+   - `EMAIL_VERIFICATION_METHOD=code` (or `link`)
+   - `EMAIL_VERIFICATION_REQUIRE_FOR_LOGIN=true`
+2. Ensure SMTP delivery is configured (`SMTP_ENABLED=true` and SMTP credentials).
+3. Apply migration:
+   - `mysql -u root -p < sql/migrations/20260603_add_email_verification.sql`
+
 ## Post-Upload Smoke Tests
 1. Login with each role and verify dashboard opens.
-2. Register a new guest account and verify redirect to dashboard.
-2. Student submits application.
-3. Admin approves/rejects application.
-4. Trigger worker endpoint once and verify `notification_jobs` rows move to `sent`.
-5. Verify new rows appear in `notification_inbox` with `auth_valid = 1`.
-6. Confirm audit log rows are created for decisions.
+2. Register a new guest account and verify it lands on `/?page=verify_email`.
+3. Complete email verification and confirm dashboard access.
+4. Student submits application.
+5. Admin approves/rejects application.
+6. Trigger worker endpoint once and verify `notification_jobs` rows move to `sent`.
+7. Verify new rows appear in `notification_inbox` with `auth_valid = 1`.
+8. Confirm audit log rows are created for decisions.
