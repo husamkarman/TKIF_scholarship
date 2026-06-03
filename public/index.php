@@ -73,6 +73,35 @@ function request_header_value(string $name): string
   return '';
 }
 
+function app_base_path(): string
+{
+  $scriptName = str_replace('\\', '/', (string)($_SERVER['SCRIPT_NAME'] ?? ''));
+  $basePath = rtrim(str_replace('\\', '/', dirname($scriptName)), '/');
+
+  $requestUri = (string)($_SERVER['REQUEST_URI'] ?? '');
+  $requestPath = (string)parse_url($requestUri, PHP_URL_PATH);
+  $requestPath = rtrim(str_replace('\\', '/', $requestPath), '/');
+
+  if ($basePath !== '' && str_ends_with($basePath, '/public')) {
+    $publicBase = $basePath;
+    $visibleHasPublic = $requestPath === $publicBase || str_starts_with($requestPath . '/', $publicBase . '/');
+    if (!$visibleHasPublic) {
+      $basePath = rtrim(substr($basePath, 0, -7), '/');
+    }
+  }
+
+  if ($basePath === '' || $basePath === '/' || $basePath === '.') {
+    return '';
+  }
+
+  return $basePath;
+}
+
+function app_route(string $page): string
+{
+  return app_base_path() . '/?page=' . rawurlencode($page);
+}
+
 function current_user(): ?array
 {
     return $_SESSION['user'] ?? null;
@@ -82,7 +111,7 @@ function require_login(): array
 {
     $user = current_user();
     if (!$user) {
-        header('Location: /?page=login');
+      header('Location: ' . app_route('login'));
         exit;
     }
     return $user;
@@ -106,6 +135,57 @@ function find_active_user_by_email(PDO $pdo, string $email): ?array
   $stmt->execute([$normalized]);
   $user = $stmt->fetch();
   return $user ?: null;
+}
+
+function user_email_exists(PDO $pdo, string $email): bool
+{
+  $normalized = normalize_email($email);
+  $stmt = $pdo->prepare('SELECT id FROM users WHERE LOWER(TRIM(email)) = ? LIMIT 1');
+  $stmt->execute([$normalized]);
+  return (bool)$stmt->fetchColumn();
+}
+
+function resolve_registration_tenant_id(PDO $pdo, array $config): ?int
+{
+  $registration = $config['registration'] ?? [];
+  $tenantCodes = [];
+
+  $preferredCode = trim((string)($registration['default_tenant_code'] ?? ''));
+  if ($preferredCode !== '') {
+    $tenantCodes[] = $preferredCode;
+  }
+
+  $msCode = trim((string)($config['microsoft']['default_tenant_code'] ?? ''));
+  if ($msCode !== '') {
+    $tenantCodes[] = $msCode;
+  }
+
+  $googleCode = trim((string)($config['google']['default_tenant_code'] ?? ''));
+  if ($googleCode !== '') {
+    $tenantCodes[] = $googleCode;
+  }
+
+  $tenantCodes = array_values(array_unique($tenantCodes));
+  if ($tenantCodes !== []) {
+    $tenantByCode = $pdo->prepare('SELECT id FROM tenants WHERE code = ? AND is_active = 1 LIMIT 1');
+    foreach ($tenantCodes as $code) {
+      $tenantByCode->execute([$code]);
+      $tenant = $tenantByCode->fetch();
+      if ($tenant) {
+        return (int)$tenant['id'];
+      }
+    }
+  }
+
+  $fallback = $pdo->query('SELECT id FROM tenants WHERE is_active = 1 ORDER BY id ASC LIMIT 1');
+  if ($fallback !== false) {
+    $tenantId = $fallback->fetchColumn();
+    if ($tenantId !== false) {
+      return (int)$tenantId;
+    }
+  }
+
+  return null;
 }
 
 function identity_table_ready(PDO $pdo): bool
@@ -979,32 +1059,258 @@ function reject_inflight_applications(PDO $pdo, int $tenantId, array $userIds, i
   return count($ids);
 }
 
-function post_to_n8n(array $config, array $payload): void
+function notification_jobs_ready(PDO $pdo): bool
 {
-    $url = rtrim($config['n8n']['base_url'], '/') . $config['n8n']['submit_hook'];
-    $json = json_encode($payload);
-    if ($json === false || !function_exists('curl_init')) {
-        return;
+  static $ready = null;
+  if ($ready !== null) {
+    return $ready;
+  }
+
+  try {
+    $stmt = $pdo->query("SHOW TABLES LIKE 'notification_jobs'");
+    $ready = $stmt !== false && (bool)$stmt->fetchColumn();
+  } catch (Throwable) {
+    $ready = false;
+  }
+
+  return $ready;
+}
+
+function enqueue_internal_notification(PDO $pdo, array $payload): void
+{
+  if (!notification_jobs_ready($pdo)) {
+    return;
+  }
+
+  $tenantId = isset($payload['tenant_id']) ? (int)$payload['tenant_id'] : 0;
+  if ($tenantId <= 0) {
+    $tenantId = null;
+  }
+
+  $applicationId = isset($payload['application_id']) ? (int)$payload['application_id'] : 0;
+  if ($applicationId <= 0) {
+    $applicationId = null;
+  }
+
+  $eventName = trim((string)($payload['event'] ?? 'unknown'));
+  $jsonPayload = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+  if (!is_string($jsonPayload)) {
+    return;
+  }
+
+  $insert = $pdo->prepare(
+    'INSERT INTO notification_jobs (tenant_id, application_id, event_name, payload_json, status, attempts, max_attempts)
+     VALUES (?, ?, ?, ?, "pending", 0, 5)'
+  );
+  $insert->execute([
+    $tenantId,
+    $applicationId,
+    $eventName,
+    $jsonPayload,
+  ]);
+}
+
+function persist_notification_inbox(PDO $pdo, array $payload, int $authValid, string $status, ?string $errorMessage, array $headerSnapshot): void
+{
+  $tenantId = isset($payload['tenant_id']) ? (int)$payload['tenant_id'] : 0;
+  if ($tenantId <= 0) {
+    $tenantId = null;
+  } else {
+    $tenantExists = $pdo->prepare('SELECT id FROM tenants WHERE id = ? LIMIT 1');
+    $tenantExists->execute([$tenantId]);
+    if (!$tenantExists->fetch()) {
+      $tenantId = null;
+    }
+  }
+
+  $applicationId = isset($payload['application_id']) ? (int)$payload['application_id'] : 0;
+  if ($applicationId <= 0) {
+    $applicationId = null;
+  } else {
+    $appExists = $pdo->prepare('SELECT id FROM applications WHERE id = ? LIMIT 1');
+    $appExists->execute([$applicationId]);
+    if (!$appExists->fetch()) {
+      $applicationId = null;
+    }
+  }
+
+  $eventName = trim((string)($payload['event'] ?? 'unknown'));
+  $notificationType = trim((string)($payload['notification_type'] ?? ''));
+  $correlationId = trim((string)($payload['correlation_id'] ?? ''));
+  $deliveryRoute = trim((string)($payload['route'] ?? ''));
+
+  $insert = $pdo->prepare(
+    'INSERT INTO notification_inbox (tenant_id, application_id, event_name, notification_type, correlation_id, delivery_route, auth_valid, source_ip, user_agent, headers_json, payload_json, status, error_message)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  );
+  $insert->execute([
+    $tenantId,
+    $applicationId,
+    $eventName,
+    $notificationType !== '' ? $notificationType : null,
+    $correlationId !== '' ? $correlationId : null,
+    $deliveryRoute !== '' ? $deliveryRoute : null,
+    $authValid,
+    null,
+    'internal-worker',
+    json_encode($headerSnapshot, JSON_UNESCAPED_UNICODE),
+    json_encode($payload, JSON_UNESCAPED_UNICODE),
+    $status,
+    $errorMessage,
+  ]);
+}
+
+function dispatch_internal_notification(PDO $pdo, array $config, array $payload): array
+{
+  if (notification_inbox_ready($pdo)) {
+    persist_notification_inbox(
+      $pdo,
+      $payload,
+      1,
+      'received',
+      null,
+      [
+        'delivery_mode' => 'internal_queue_direct',
+      ]
+    );
+    return ['ok' => true, 'error' => ''];
+  }
+
+  $endpoint = trim((string)($config['notifications']['internal_endpoint'] ?? ''));
+  if ($endpoint === '') {
+    return ['ok' => false, 'error' => 'internal_notification_endpoint_not_configured'];
+  }
+
+  $secret = trim((string)($config['notifications']['internal_secret'] ?? ''));
+  if ($secret === '') {
+    return ['ok' => false, 'error' => 'internal_notification_secret_not_configured'];
+  }
+
+  if (!function_exists('curl_init')) {
+    return ['ok' => false, 'error' => 'curl_not_available'];
+  }
+
+  $json = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+  if (!is_string($json)) {
+    return ['ok' => false, 'error' => 'payload_json_encode_failed'];
+  }
+
+  $timestamp = (string)time();
+  $signature = 'sha256=' . hash_hmac('sha256', $timestamp . '.' . $json, $secret);
+
+  $ch = curl_init($endpoint);
+  if ($ch === false) {
+    return ['ok' => false, 'error' => 'curl_init_failed'];
+  }
+
+  curl_setopt_array($ch, [
+    CURLOPT_POST => true,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER => [
+      'Content-Type: application/json',
+      'X-TKIF-Timestamp: ' . $timestamp,
+      'X-TKIF-Signature: ' . $signature,
+    ],
+    CURLOPT_POSTFIELDS => $json,
+    CURLOPT_TIMEOUT => 15,
+  ]);
+
+  $response = curl_exec($ch);
+  if ($response === false) {
+    $error = curl_error($ch);
+    curl_close($ch);
+    return ['ok' => false, 'error' => $error !== '' ? $error : 'dispatch_failed'];
+  }
+
+  $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+  curl_close($ch);
+
+  if ($httpCode >= 200 && $httpCode < 300) {
+    return ['ok' => true, 'error' => ''];
+  }
+
+  return ['ok' => false, 'error' => 'dispatch_http_' . (string)$httpCode];
+}
+
+function process_notification_queue(PDO $pdo, array $config, int $limit = 10): array
+{
+  if (!notification_jobs_ready($pdo)) {
+    return ['processed' => 0, 'sent' => 0, 'failed' => 0];
+  }
+
+  $limit = max(1, min(100, $limit));
+  $select = $pdo->prepare(
+    'SELECT id, payload_json, attempts, max_attempts
+     FROM notification_jobs
+     WHERE status IN ("pending", "failed")
+       AND attempts < max_attempts
+       AND available_at <= NOW()
+     ORDER BY id ASC
+     LIMIT :limit'
+  );
+  $select->bindValue(':limit', $limit, PDO::PARAM_INT);
+  $select->execute();
+  $jobs = $select->fetchAll();
+
+  $processed = 0;
+  $sent = 0;
+  $failed = 0;
+
+  foreach ($jobs as $job) {
+    $jobId = (int)($job['id'] ?? 0);
+    if ($jobId <= 0) {
+      continue;
     }
 
-    $ch = curl_init($url);
-    if ($ch === false) {
-        return;
+    $attempts = (int)($job['attempts'] ?? 0) + 1;
+    $lock = $pdo->prepare('UPDATE notification_jobs SET status = "processing", locked_at = NOW() WHERE id = ? AND status IN ("pending", "failed")');
+    $lock->execute([$jobId]);
+    if ($lock->rowCount() === 0) {
+      continue;
     }
 
-    $headers = ['Content-Type: application/json'];
-    if (!empty($config['n8n']['api_key'])) {
-        $headers[] = 'X-N8N-API-KEY: ' . $config['n8n']['api_key'];
+    $processed++;
+    $payload = json_decode((string)($job['payload_json'] ?? ''), true);
+    if (!is_array($payload)) {
+      $failed++;
+      $markInvalid = $pdo->prepare(
+        'UPDATE notification_jobs
+         SET status = "failed", attempts = ?, last_error = ?, locked_at = NULL, updated_at = NOW(), available_at = DATE_ADD(NOW(), INTERVAL 5 MINUTE)
+         WHERE id = ?'
+      );
+      $markInvalid->execute([$attempts, 'invalid_payload_json', $jobId]);
+      continue;
     }
 
-    curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_HTTPHEADER => $headers,
-        CURLOPT_POSTFIELDS => $json,
-        CURLOPT_TIMEOUT => 3,
+    $result = dispatch_internal_notification($pdo, $config, $payload);
+    if ($result['ok'] ?? false) {
+      $sent++;
+      $markSent = $pdo->prepare(
+        'UPDATE notification_jobs
+         SET status = "sent", attempts = ?, processed_at = NOW(), last_error = NULL, locked_at = NULL, updated_at = NOW()
+         WHERE id = ?'
+      );
+      $markSent->execute([$attempts, $jobId]);
+      continue;
+    }
+
+    $failed++;
+    $delayMinutes = min(30, 1 << min(5, max(0, $attempts - 1)));
+    $nextAttemptAt = (new DateTimeImmutable('now'))->add(new DateInterval('PT' . (string)$delayMinutes . 'M'));
+    $markFailed = $pdo->prepare(
+      'UPDATE notification_jobs
+       SET status = "failed", attempts = ?, last_error = ?, available_at = ?, locked_at = NULL, updated_at = NOW()
+       WHERE id = ?'
+    );
+    $markFailed->execute([
+      $attempts,
+      (string)($result['error'] ?? 'dispatch_failed'),
+      $nextAttemptAt->format('Y-m-d H:i:s'),
+      $jobId,
     ]);
-    curl_exec($ch);
+  }
+
+  return ['processed' => $processed, 'sent' => $sent, 'failed' => $failed];
 }
 
 $pdo = null;
@@ -1018,6 +1324,38 @@ try {
 $page = $_GET['page'] ?? 'home';
 $message = '';
 $error = '';
+$registerOld = [
+  'full_name' => '',
+  'email' => '',
+];
+
+if ($page === 'notification_worker_run') {
+  if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    json_response(405, ['ok' => false, 'error' => 'method_not_allowed']);
+  }
+
+  if (!$pdo) {
+    json_response(503, ['ok' => false, 'error' => 'database_unavailable']);
+  }
+
+  if (!notification_jobs_ready($pdo)) {
+    json_response(503, ['ok' => false, 'error' => 'notification_jobs_table_missing']);
+  }
+
+  $workerToken = trim((string)($config['notifications']['worker_token'] ?? ''));
+  $providedToken = request_header_value('X-Worker-Token');
+  if ($providedToken === '') {
+    $providedToken = trim((string)($_POST['token'] ?? ''));
+  }
+
+  if ($workerToken !== '' && !hash_equals($workerToken, $providedToken)) {
+    json_response(401, ['ok' => false, 'error' => 'invalid_worker_token']);
+  }
+
+  $limit = isset($_POST['limit']) ? (int)$_POST['limit'] : 20;
+  $stats = process_notification_queue($pdo, $config, $limit);
+  json_response(200, ['ok' => true, 'stats' => $stats]);
+}
 
 if ($page === 'notification_inbox_receive') {
   if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -1130,7 +1468,7 @@ if ($page === 'notification_inbox_receive') {
 
 if ($page === 'logout') {
     session_destroy();
-    header('Location: /?page=login');
+  header('Location: ' . app_route('login'));
     exit;
 }
 
@@ -1144,11 +1482,81 @@ if ($page === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
     if ($user && password_verify($password, $user['password_hash'])) {
       ensure_user_profile_exists($pdo, (int)$user['id'], (string)$user['full_name']);
       set_user_session($user);
-        header('Location: /?page=dashboard');
+        header('Location: ' . app_route('dashboard'));
         exit;
     }
 
     $error = 'Invalid credentials';
+}
+
+if ($page === 'register' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
+    require_csrf();
+
+    if (($config['registration']['enabled'] ?? true) !== true) {
+      $error = 'Registration is currently disabled.';
+      $page = 'login';
+    } else {
+      $fullName = trim((string)($_POST['full_name'] ?? ''));
+      $email = normalize_email((string)($_POST['email'] ?? ''));
+      $password = (string)($_POST['password'] ?? '');
+      $confirmPassword = (string)($_POST['confirm_password'] ?? '');
+
+      $registerOld = [
+        'full_name' => $fullName,
+        'email' => $email,
+      ];
+
+      if ($fullName === '') {
+        $error = 'Full name is required.';
+      } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $error = 'Valid email is required.';
+      } elseif (strlen($password) < 8) {
+        $error = 'Password must be at least 8 characters.';
+      } elseif (!hash_equals($password, $confirmPassword)) {
+        $error = 'Password confirmation does not match.';
+      } elseif (user_email_exists($pdo, $email)) {
+        $error = 'This email is already registered.';
+      } else {
+        $tenantId = resolve_registration_tenant_id($pdo, $config);
+        if (!$tenantId) {
+          $error = 'No active tenant is available for registration.';
+        } else {
+          $role = trim((string)($config['registration']['default_role'] ?? 'student'));
+          if (!in_array($role, ['student', 'admin', 'manager', 'it'], true)) {
+            $role = 'student';
+          }
+
+          $passwordHash = password_hash($password, PASSWORD_DEFAULT);
+          if ($passwordHash === false) {
+            $error = 'Unable to process registration password.';
+          } else {
+            $insert = $pdo->prepare('INSERT INTO users (tenant_id, full_name, email, password_hash, role, is_active) VALUES (?, ?, ?, ?, ?, 1)');
+            $insert->execute([
+              $tenantId,
+              $fullName,
+              $email,
+              $passwordHash,
+              $role,
+            ]);
+
+            $newUserId = (int)$pdo->lastInsertId();
+            $userStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, password_hash FROM users WHERE id = ? LIMIT 1');
+            $userStmt->execute([$newUserId]);
+            $newUser = $userStmt->fetch();
+            if (!$newUser) {
+              $error = 'Registration succeeded but login bootstrap failed.';
+            } else {
+              ensure_user_profile_exists($pdo, (int)$newUser['id'], (string)$newUser['full_name']);
+              set_user_session($newUser);
+              header('Location: ' . app_route('dashboard'));
+              exit;
+            }
+          }
+        }
+      }
+
+      $page = 'register';
+    }
 }
 
   if ($page === 'login_otp_request' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
@@ -1190,7 +1598,7 @@ if ($page === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
           ensure_user_profile_exists($pdo, (int)$user['id'], (string)$user['full_name']);
         set_user_session($user);
         unset($_SESSION['otp_user_id'], $_SESSION['otp_user_email']);
-        header('Location: /?page=dashboard');
+        header('Location: ' . app_route('dashboard'));
         exit;
       }
     }
@@ -1286,7 +1694,7 @@ if ($page === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
             } else {
               ensure_user_profile_exists($pdo, (int)$user['id'], (string)$user['full_name']);
               set_user_session($user);
-              header('Location: /?page=dashboard');
+              header('Location: ' . app_route('dashboard'));
               exit;
             }
           }
@@ -1381,7 +1789,7 @@ if ($page === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
             } else {
               ensure_user_profile_exists($pdo, (int)$user['id'], (string)$user['full_name']);
               set_user_session($user);
-              header('Location: /?page=dashboard');
+              header('Location: ' . app_route('dashboard'));
               exit;
             }
           }
@@ -1579,7 +1987,7 @@ if ($page === 'apply' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
         json_encode(['reason' => $reason], JSON_UNESCAPED_UNICODE),
       ]);
 
-      post_to_n8n($config, [
+      enqueue_internal_notification($pdo, [
         'event' => 'application_rejected_blacklist',
         'application_id' => $applicationId,
         'tenant_id' => $user['tenant_id'],
@@ -1588,6 +1996,7 @@ if ($page === 'apply' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
         'student_email' => $user['email'],
         'reason' => $reason,
       ]);
+      process_notification_queue($pdo, $config, 5);
 
       snapshot_application_form(
         $pdo,
@@ -1674,7 +2083,7 @@ if ($page === 'apply' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
       ]);
 
       $applicationId = (int)$pdo->lastInsertId();
-      post_to_n8n($config, [
+      enqueue_internal_notification($pdo, [
         'event' => 'application_submitted',
         'application_id' => $applicationId,
         'tenant_id' => $user['tenant_id'],
@@ -1683,6 +2092,7 @@ if ($page === 'apply' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
         'student_email' => $user['email'],
         'answers_json' => json_encode($answers, JSON_UNESCAPED_UNICODE),
       ]);
+      process_notification_queue($pdo, $config, 5);
 
       snapshot_application_form(
         $pdo,
@@ -2022,7 +2432,7 @@ if ($page === 'decide' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
     $metaStmt->execute([$applicationId, $user['tenant_id']]);
     $decisionMeta = $metaStmt->fetch() ?: [];
 
-    post_to_n8n($config, [
+    enqueue_internal_notification($pdo, [
         'event' => 'application_' . $status,
         'application_id' => $applicationId,
         'tenant_id' => $user['tenant_id'],
@@ -2033,6 +2443,7 @@ if ($page === 'decide' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
       'reason' => $reason,
         'by' => $user['email'],
     ]);
+    process_notification_queue($pdo, $config, 5);
 
     if (smtp_is_ready($config)) {
       $studentStmt = $pdo->prepare('SELECT u.full_name, u.email FROM applications a JOIN users u ON u.id = a.student_id WHERE a.id = ? AND a.tenant_id = ? LIMIT 1');
@@ -2071,14 +2482,17 @@ $user = current_user();
       <h1><?= h($config['app_name']) ?></h1>
       <nav>
         <?php if ($user): ?>
-          <a href="/?page=dashboard">Dashboard</a>
-          <a href="/?page=profile">Profile</a>
+          <a href="<?= h(app_route('dashboard')) ?>">Dashboard</a>
+          <a href="<?= h(app_route('profile')) ?>">Profile</a>
           <?php if (in_array((string)$user['role'], ['admin', 'it'], true)): ?>
-            <a href="/?page=identity_diagnostics">Identity Diagnostics</a>
+            <a href="<?= h(app_route('identity_diagnostics')) ?>">Identity Diagnostics</a>
           <?php endif; ?>
-          <a href="/?page=logout">Logout</a>
+          <a href="<?= h(app_route('logout')) ?>">Logout</a>
         <?php else: ?>
-          <a href="/?page=login">Login</a>
+          <a href="<?= h(app_route('login')) ?>">Login</a>
+          <?php if (($config['registration']['enabled'] ?? true) === true): ?>
+            <a href="<?= h(app_route('register')) ?>">Register</a>
+          <?php endif; ?>
         <?php endif; ?>
       </nav>
     </header>
@@ -2097,13 +2511,16 @@ $user = current_user();
 
     <?php if ($page === 'home'): ?>
       <h2>Local MVP Foundation</h2>
-      <p>This starter includes role dashboards and a basic application workflow connected to n8n webhook.</p>
-      <a class="btn primary" href="/?page=login">Start</a>
+      <p>This starter includes role dashboards and a basic application workflow powered by an internal notification queue.</p>
+      <a class="btn primary" href="<?= h(app_route('login')) ?>">Start</a>
+      <?php if (($config['registration']['enabled'] ?? true) === true): ?>
+        <a class="btn" href="<?= h(app_route('register')) ?>">Create Account</a>
+      <?php endif; ?>
 
     <?php elseif ($page === 'login'): ?>
       <h2>Login</h2>
       <p>Demo password for seeded users: <strong>Password123!</strong></p>
-      <form method="post" action="/?page=login">
+      <form method="post" action="<?= h(app_route('login')) ?>">
         <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
         <label>Email</label>
         <input name="email" type="email" required>
@@ -2115,7 +2532,7 @@ $user = current_user();
 
       <hr>
       <h3>Email OTP Login</h3>
-      <form method="post" action="/?page=login_otp_request">
+      <form method="post" action="<?= h(app_route('login_otp_request')) ?>">
         <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
         <label>Email</label>
         <input name="email" type="email" required>
@@ -2124,7 +2541,7 @@ $user = current_user();
       </form>
 
       <?php if (!empty($_SESSION['otp_user_email'])): ?>
-        <form method="post" action="/?page=login_otp_verify" style="margin-top: 10px;">
+        <form method="post" action="<?= h(app_route('login_otp_verify')) ?>" style="margin-top: 10px;">
           <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
           <p>OTP sent to: <strong><?= h((string)$_SESSION['otp_user_email']) ?></strong></p>
           <label>OTP Code</label>
@@ -2137,7 +2554,7 @@ $user = current_user();
       <hr>
       <h3>Microsoft Login</h3>
       <?php if (microsoft_oauth_ready($config)): ?>
-        <a class="btn" href="/?page=auth_microsoft_start">Sign in with Microsoft</a>
+        <a class="btn" href="<?= h(app_route('auth_microsoft_start')) ?>">Sign in with Microsoft</a>
       <?php else: ?>
         <p>Microsoft OAuth is not fully configured yet.</p>
       <?php endif; ?>
@@ -2145,9 +2562,36 @@ $user = current_user();
       <hr>
       <h3>Google Login</h3>
       <?php if (google_oauth_ready($config)): ?>
-        <a class="btn" href="/?page=auth_google_start">Sign in with Google</a>
+        <a class="btn" href="<?= h(app_route('auth_google_start')) ?>">Sign in with Google</a>
       <?php else: ?>
         <p>Google OAuth is not fully configured yet.</p>
+      <?php endif; ?>
+
+      <?php if (($config['registration']['enabled'] ?? true) === true): ?>
+        <hr>
+        <p>New here? <a href="<?= h(app_route('register')) ?>">Create an account</a></p>
+      <?php endif; ?>
+
+    <?php elseif ($page === 'register'): ?>
+      <h2>Create Account</h2>
+      <?php if (($config['registration']['enabled'] ?? true) !== true): ?>
+        <p>Registration is currently disabled.</p>
+        <a class="btn" href="<?= h(app_route('login')) ?>">Back to Login</a>
+      <?php else: ?>
+        <form method="post" action="<?= h(app_route('register')) ?>">
+          <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+          <label>Full Name</label>
+          <input name="full_name" type="text" value="<?= h((string)$registerOld['full_name']) ?>" required>
+          <label>Email</label>
+          <input name="email" type="email" value="<?= h((string)$registerOld['email']) ?>" required>
+          <label>Password</label>
+          <input name="password" type="password" minlength="8" required>
+          <label>Confirm Password</label>
+          <input name="confirm_password" type="password" minlength="8" required>
+          <br><br>
+          <button class="btn primary" type="submit">Create Account</button>
+          <a class="btn" href="<?= h(app_route('login')) ?>">Back to Login</a>
+        </form>
       <?php endif; ?>
 
     <?php elseif ($page === 'profile' && $user && $pdo): ?>

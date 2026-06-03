@@ -2,14 +2,15 @@
 
 This repository is a local starter for:
 - PHP + MySQL role-based scholarship portal
-- n8n webhook automation
+- Internal notification queue + worker automation
 - Manual cPanel deployment path
 
 ## Included
 - Student/Admin/Manager/IT login routing
+- Guest registration flow (configurable)
 - Basic scholarship apply flow
 - Basic application approve/reject flow
-- n8n webhook trigger on submit and decision
+- Internal queued notifications on submit and decision
 - Multi-tenant schema baseline (`tenant_id` model)
 
 ## Quick Start (Local)
@@ -30,6 +31,10 @@ This repository is a local starter for:
    - `manager@tkif.local`
    - `it@tkif.local`
 
+## cPanel Routing
+1. Best setup: point the domain document root to `public/`.
+2. Fallback setup: if cPanel only gives you `public_html`, upload the full project there and keep the root-level `.htaccess` so requests are forwarded into `public/`.
+
 ## SMTP Setup (Secure)
 1. Set all SMTP values in `.env`.
 2. Keep `SMTP_PASSWORD` only in `.env` (never commit).
@@ -38,25 +43,24 @@ This repository is a local starter for:
    - Student application submitted
    - Admin/Manager application decision (approved/rejected)
 
+## Guest Registration
+1. Registration page is available at `/?page=register` when enabled.
+2. Configure `.env` values:
+   - `REGISTRATION_ENABLED=true|false`
+   - `REGISTRATION_DEFAULT_ROLE=student`
+   - `REGISTRATION_DEFAULT_TENANT_CODE=<optional-tenant-code>`
+3. If no `REGISTRATION_DEFAULT_TENANT_CODE` is set, the first active tenant is used.
+
 ## Security Rotation (Step 1)
-1. Rotate exposed secrets at provider side first (SMTP, Microsoft, Google, DB, N8N).
+1. Rotate exposed secrets at provider side first (SMTP, Microsoft, Google, DB, internal worker token).
 2. Update `.env` with new values.
 3. Run env security check:
    - `bash scripts/check_env_security.sh .env`
 4. Follow full runbook:
    - `SECURITY_ROTATION.md`
 
-## n8n Quick Start
-1. Start n8n:
-   - `docker compose -f docker-compose.n8n.yml up -d`
-2. Open n8n UI:
-   - `http://localhost:5678`
-3. Import workflow file:
-   - `n8n/workflows/scholarship-submit.json`
-4. Activate workflow
-
-### Internal Notifications (No External Webhook Service)
-Use your own app endpoint instead of third-party webhook capture sites.
+### Internal Notifications (No External Service)
+Use your own app endpoint and internal worker instead of third-party webhook services.
 
 1. Apply notification inbox migration:
    - `mysql -u root -p < sql/migrations/20260603_add_notification_inbox.sql`
@@ -64,19 +68,22 @@ Use your own app endpoint instead of third-party webhook capture sites.
    - `INTERNAL_NOTIFICATION_ENDPOINT=http://localhost:8080/?page=notification_inbox_receive`
    - `INTERNAL_NOTIFICATION_SECRET=<strong-random-secret>`
    - `INTERNAL_NOTIFICATION_HMAC_TOLERANCE_SECONDS=300`
-3. Start n8n with internal dispatch targets:
-   - `N8N_NOTIFICATION_WEBHOOK_URL=http://localhost:8080/?page=notification_inbox_receive`
-   - `N8N_ESCALATION_WEBHOOK_URL=http://localhost:8080/?page=notification_inbox_receive`
-   - `INTERNAL_NOTIFICATION_SECRET=<same-secret-as-app>`
+   - `INTERNAL_NOTIFICATION_WORKER_TOKEN=<strong-random-token>`
+3. Apply jobs migration:
+   - `mysql -u root -p < sql/migrations/20260603_add_notification_jobs.sql`
+4. Process queue manually (or from cron):
+   - `curl -X POST "http://localhost:8080/?page=notification_worker_run" -H "X-Worker-Token: <token>"`
+5. Production cron (example every minute):
+   - `* * * * * /usr/bin/curl -sS -X POST "https://your-domain/?page=notification_worker_run" -H "X-Worker-Token: <token>" >/dev/null 2>&1`
 
 Security behavior:
-- n8n sends signed headers: `X-TKIF-Timestamp` and `X-TKIF-Signature`.
+- Internal worker sends signed headers: `X-TKIF-Timestamp` and `X-TKIF-Signature`.
 - App verifies `sha256=HMAC(secret, timestamp + '.' + rawBody)` and rejects invalid/expired signatures.
 
 Admin/IT can monitor received notification events from Dashboard -> Internal Notification Inbox.
 
-n8n workflow status:
-- Step 8 implemented (`n8n/workflows/scholarship-submit.json`) with submission/decision/blacklist routing and escalation timer.
+Queue workflow status:
+- Step 8 implemented internally with submission/decision/blacklist queue events and signed dispatch to inbox.
 
 ## Next Build Step
 - Add Google auth integration.

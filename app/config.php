@@ -37,15 +37,16 @@ return [
         'user' => env('DB_USER', 'root'),
         'pass' => env('DB_PASS', ''),
     ],
-    'n8n' => [
-        'base_url' => env('N8N_BASE_URL', 'http://localhost:5678'),
-        'api_key' => env('N8N_API_KEY', ''),
-        'submit_hook' => env('N8N_WEBHOOK_SUBMIT', '/webhook/scholarship-submit'),
-    ],
     'notifications' => [
         'internal_endpoint' => env('INTERNAL_NOTIFICATION_ENDPOINT', 'http://localhost:8080/?page=notification_inbox_receive'),
         'internal_secret' => env('INTERNAL_NOTIFICATION_SECRET', ''),
         'hmac_tolerance_seconds' => (int)env('INTERNAL_NOTIFICATION_HMAC_TOLERANCE_SECONDS', '300'),
+        'worker_token' => env('INTERNAL_NOTIFICATION_WORKER_TOKEN', ''),
+    ],
+    'registration' => [
+        'enabled' => env('REGISTRATION_ENABLED', 'true') === 'true',
+        'default_role' => env('REGISTRATION_DEFAULT_ROLE', 'student'),
+        'default_tenant_code' => env('REGISTRATION_DEFAULT_TENANT_CODE', ''),
     ],
     'smtp' => [
         'enabled' => env('SMTP_ENABLED', 'false') === 'true',
