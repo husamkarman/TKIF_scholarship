@@ -53,4 +53,28 @@ return [
         'from_name' => env('SMTP_FROM_NAME', env('APP_NAME', 'TKIF Scholarship MVP')),
         'timeout' => env('SMTP_TIMEOUT', '10'),
     ],
+    'otp' => [
+        'enabled' => env('OTP_ENABLED', 'true') === 'true',
+        'length' => (int)env('OTP_LENGTH', '6'),
+        'ttl_minutes' => (int)env('OTP_TTL_MINUTES', '10'),
+    ],
+    'microsoft' => [
+        'client_id' => env('MICROSOFT_CLIENT_ID', ''),
+        'tenant_id' => env('MICROSOFT_TENANT_ID', ''),
+        'redirect_uri' => env('MICROSOFT_REDIRECT_URI', ''),
+        'client_secret' => env('MICROSOFT_CLIENT_SECRET', ''),
+        'auto_provision' => env('MICROSOFT_AUTO_PROVISION', 'true') === 'true',
+        'allowed_domain' => env('MICROSOFT_ALLOWED_DOMAIN', ''),
+        'default_role' => env('MICROSOFT_DEFAULT_ROLE', 'student'),
+        'default_tenant_code' => env('MICROSOFT_DEFAULT_TENANT_CODE', 'TKIF001'),
+    ],
+    'google' => [
+        'client_id' => env('GOOGLE_CLIENT_ID', ''),
+        'client_secret' => env('GOOGLE_CLIENT_SECRET', ''),
+        'redirect_uri' => env('GOOGLE_REDIRECT_URI', ''),
+        'auto_provision' => env('GOOGLE_AUTO_PROVISION', 'true') === 'true',
+        'allowed_domain' => env('GOOGLE_ALLOWED_DOMAIN', ''),
+        'default_role' => env('GOOGLE_DEFAULT_ROLE', 'student'),
+        'default_tenant_code' => env('GOOGLE_DEFAULT_TENANT_CODE', 'TKIF001'),
+    ],
 ];

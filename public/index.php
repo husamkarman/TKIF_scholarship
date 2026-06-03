@@ -8,6 +8,8 @@ if (is_file(dirname(__DIR__) . '/vendor/autoload.php')) {
   require dirname(__DIR__) . '/vendor/autoload.php';
 }
 require dirname(__DIR__) . '/app/lib/notify.php';
+require dirname(__DIR__) . '/app/lib/profile.php';
+require dirname(__DIR__) . '/app/controllers/profile_controller.php';
 
 use Shuchkin\SimpleXLSX;
 
@@ -17,6 +19,11 @@ session_start();
 function h(string $value): string
 {
     return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
+}
+
+function lock_badge_html(bool $locked): string
+{
+  return $locked ? '<span class="lock-badge" title="Read only for your role">Locked</span>' : '';
 }
 
 function csrf_token(): string
@@ -49,6 +56,296 @@ function require_login(): array
         exit;
     }
     return $user;
+}
+
+function set_user_session(array $user): void
+{
+  $_SESSION['user'] = [
+    'id' => (int)$user['id'],
+    'tenant_id' => (int)$user['tenant_id'],
+    'name' => $user['full_name'],
+    'email' => $user['email'],
+    'role' => $user['role'],
+  ];
+}
+
+function find_active_user_by_email(PDO $pdo, string $email): ?array
+{
+  $normalized = normalize_email($email);
+  $stmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, password_hash FROM users WHERE LOWER(TRIM(email)) = ? AND is_active = 1 LIMIT 1');
+  $stmt->execute([$normalized]);
+  $user = $stmt->fetch();
+  return $user ?: null;
+}
+
+function otp_ready(array $config): bool
+{
+  return ($config['otp']['enabled'] ?? false) && smtp_is_ready($config);
+}
+
+function generate_numeric_otp(int $length): string
+{
+  $length = max(4, min(10, $length));
+  $code = '';
+  for ($i = 0; $i < $length; $i++) {
+    $code .= (string)random_int(0, 9);
+  }
+  return $code;
+}
+
+function issue_email_otp(PDO $pdo, array $config, array $user): bool
+{
+  if (!otp_ready($config)) {
+    return false;
+  }
+
+  $code = generate_numeric_otp((int)$config['otp']['length']);
+  $hash = password_hash($code, PASSWORD_DEFAULT);
+  if ($hash === false) {
+    return false;
+  }
+
+  $ttlMinutes = max(1, (int)$config['otp']['ttl_minutes']);
+  $expiresAt = date('Y-m-d H:i:s', time() + ($ttlMinutes * 60));
+
+  $stmt = $pdo->prepare('INSERT INTO otp_codes (tenant_id, user_id, email, otp_hash, expires_at) VALUES (?, ?, ?, ?, ?)');
+  $stmt->execute([
+    (int)$user['tenant_id'],
+    (int)$user['id'],
+    (string)$user['email'],
+    $hash,
+    $expiresAt,
+  ]);
+
+  return send_smtp_mail(
+    $config,
+    (string)$user['email'],
+    (string)$user['full_name'],
+    'Your OTP Login Code',
+    '<p>Your OTP code is <strong>' . $code . '</strong>.</p><p>This code expires in ' . $ttlMinutes . ' minutes.</p>'
+  );
+}
+
+function verify_email_otp(PDO $pdo, int $userId, string $code): bool
+{
+  $stmt = $pdo->prepare('SELECT id, otp_hash FROM otp_codes WHERE user_id = ? AND consumed_at IS NULL AND expires_at >= NOW() ORDER BY id DESC LIMIT 5');
+  $stmt->execute([$userId]);
+  $rows = $stmt->fetchAll();
+
+  foreach ($rows as $row) {
+    if (password_verify($code, (string)$row['otp_hash'])) {
+      $consume = $pdo->prepare('UPDATE otp_codes SET consumed_at = NOW() WHERE id = ?');
+      $consume->execute([(int)$row['id']]);
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function microsoft_oauth_ready(array $config): bool
+{
+  $ms = $config['microsoft'] ?? [];
+  return trim((string)($ms['client_id'] ?? '')) !== ''
+    && trim((string)($ms['tenant_id'] ?? '')) !== ''
+    && trim((string)($ms['redirect_uri'] ?? '')) !== ''
+    && trim((string)($ms['client_secret'] ?? '')) !== '';
+}
+
+function microsoft_authorize_url(array $config): string
+{
+  $tenantId = (string)$config['microsoft']['tenant_id'];
+  $state = bin2hex(random_bytes(16));
+  $_SESSION['ms_oauth_state'] = $state;
+
+  $query = http_build_query([
+    'client_id' => (string)$config['microsoft']['client_id'],
+    'response_type' => 'code',
+    'redirect_uri' => (string)$config['microsoft']['redirect_uri'],
+    'response_mode' => 'query',
+    'scope' => 'openid profile email offline_access',
+    'state' => $state,
+  ]);
+
+  return 'https://login.microsoftonline.com/' . rawurlencode($tenantId) . '/oauth2/v2.0/authorize?' . $query;
+}
+
+  function microsoft_extract_email(?array $profile, ?array $tokenData): string
+  {
+    $candidates = [];
+    if (is_array($profile)) {
+      foreach (['email', 'preferred_username', 'upn', 'unique_name'] as $key) {
+        if (!empty($profile[$key])) {
+          $candidates[] = (string)$profile[$key];
+        }
+      }
+    }
+
+    if ($tokenData && !empty($tokenData['id_token']) && is_string($tokenData['id_token'])) {
+      $parts = explode('.', $tokenData['id_token']);
+      if (count($parts) >= 2) {
+        $payload = $parts[1];
+        $payload .= str_repeat('=', (4 - strlen($payload) % 4) % 4);
+        $decoded = base64_decode(strtr($payload, '-_', '+/'), true);
+        $claims = is_string($decoded) ? json_decode($decoded, true) : null;
+        if (is_array($claims)) {
+          foreach (['email', 'preferred_username', 'upn', 'unique_name'] as $key) {
+            if (!empty($claims[$key])) {
+              $candidates[] = (string)$claims[$key];
+            }
+          }
+        }
+      }
+    }
+
+    foreach ($candidates as $value) {
+      $normalized = normalize_email($value);
+      if (str_contains($normalized, '@')) {
+        return $normalized;
+      }
+    }
+
+    return '';
+  }
+
+  function microsoft_provision_user_if_allowed(PDO $pdo, array $config, string $email, string $displayName): ?array
+  {
+    $ms = $config['microsoft'] ?? [];
+    if (($ms['auto_provision'] ?? false) !== true) {
+      return null;
+    }
+
+    $normalized = normalize_email($email);
+    $allowedRaw = strtolower(trim((string)($ms['allowed_domain'] ?? '')));
+    $allowedDomains = array_values(array_filter(array_map(static fn(string $d): string => trim($d), preg_split('/[,;\s]+/', $allowedRaw ?: '') ?: [])));
+    if ($allowedDomains !== []) {
+      $atPos = strrpos($normalized, '@');
+      $domain = $atPos === false ? '' : substr($normalized, $atPos + 1);
+      if ($domain === '' || !in_array($domain, $allowedDomains, true)) {
+        return null;
+      }
+    }
+
+    $tenantCode = trim((string)($ms['default_tenant_code'] ?? ''));
+    $tenantStmt = $pdo->prepare('SELECT id FROM tenants WHERE code = ? AND is_active = 1 LIMIT 1');
+    $tenantStmt->execute([$tenantCode]);
+    $tenant = $tenantStmt->fetch();
+    if (!$tenant) {
+      return null;
+    }
+
+    $role = trim((string)($ms['default_role'] ?? 'student'));
+    if (!in_array($role, ['student', 'admin', 'manager', 'it'], true)) {
+      $role = 'student';
+    }
+
+    $fullName = trim($displayName);
+    if ($fullName === '') {
+      $fullName = strstr($normalized, '@', true) ?: 'Microsoft User';
+    }
+
+    $passwordHash = password_hash(bin2hex(random_bytes(16)), PASSWORD_DEFAULT);
+    if ($passwordHash === false) {
+      return null;
+    }
+
+    $insert = $pdo->prepare('INSERT INTO users (tenant_id, full_name, email, password_hash, role, is_active) VALUES (?, ?, ?, ?, ?, 1)');
+    $insert->execute([
+      (int)$tenant['id'],
+      $fullName,
+      $normalized,
+      $passwordHash,
+      $role,
+    ]);
+
+    $createdId = (int)$pdo->lastInsertId();
+    $select = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, password_hash FROM users WHERE id = ? LIMIT 1');
+    $select->execute([$createdId]);
+    $newUser = $select->fetch();
+    return $newUser ?: null;
+  }
+
+function google_oauth_ready(array $config): bool
+{
+  $g = $config['google'] ?? [];
+  return trim((string)($g['client_id'] ?? '')) !== ''
+    && trim((string)($g['redirect_uri'] ?? '')) !== ''
+    && trim((string)($g['client_secret'] ?? '')) !== '';
+}
+
+function google_authorize_url(array $config): string
+{
+  $state = bin2hex(random_bytes(16));
+  $_SESSION['google_oauth_state'] = $state;
+
+  $query = http_build_query([
+    'client_id' => (string)$config['google']['client_id'],
+    'redirect_uri' => (string)$config['google']['redirect_uri'],
+    'response_type' => 'code',
+    'scope' => 'openid email profile',
+    'state' => $state,
+    'access_type' => 'online',
+    'prompt' => 'select_account',
+  ]);
+
+  return 'https://accounts.google.com/o/oauth2/v2/auth?' . $query;
+}
+
+function google_provision_user_if_allowed(PDO $pdo, array $config, string $email, string $displayName): ?array
+{
+  $g = $config['google'] ?? [];
+  if (($g['auto_provision'] ?? false) !== true) {
+    return null;
+  }
+
+  $normalized = normalize_email($email);
+  $allowedRaw = strtolower(trim((string)($g['allowed_domain'] ?? '')));
+  $allowedDomains = array_values(array_filter(array_map(static fn(string $d): string => trim($d), preg_split('/[,;\s]+/', $allowedRaw ?: '') ?: [])));
+  if ($allowedDomains !== []) {
+    $atPos = strrpos($normalized, '@');
+    $domain = $atPos === false ? '' : substr($normalized, $atPos + 1);
+    if ($domain === '' || !in_array($domain, $allowedDomains, true)) {
+      return null;
+    }
+  }
+
+  $tenantCode = trim((string)($g['default_tenant_code'] ?? ''));
+  $tenantStmt = $pdo->prepare('SELECT id FROM tenants WHERE code = ? AND is_active = 1 LIMIT 1');
+  $tenantStmt->execute([$tenantCode]);
+  $tenant = $tenantStmt->fetch();
+  if (!$tenant) {
+    return null;
+  }
+
+  $role = trim((string)($g['default_role'] ?? 'student'));
+  if (!in_array($role, ['student', 'admin', 'manager', 'it'], true)) {
+    $role = 'student';
+  }
+
+  $fullName = trim($displayName);
+  if ($fullName === '') {
+    $fullName = strstr($normalized, '@', true) ?: 'Google User';
+  }
+
+  $passwordHash = password_hash(bin2hex(random_bytes(16)), PASSWORD_DEFAULT);
+  if ($passwordHash === false) {
+    return null;
+  }
+
+  $insert = $pdo->prepare('INSERT INTO users (tenant_id, full_name, email, password_hash, role, is_active) VALUES (?, ?, ?, ?, ?, 1)');
+  $insert->execute([
+    (int)$tenant['id'],
+    $fullName,
+    $normalized,
+    $passwordHash,
+    $role,
+  ]);
+
+  $createdId = (int)$pdo->lastInsertId();
+  $select = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, password_hash FROM users WHERE id = ? LIMIT 1');
+  $select->execute([$createdId]);
+  $newUser = $select->fetch();
+  return $newUser ?: null;
 }
 
 function normalize_form_schema(mixed $schema): array
@@ -125,6 +422,12 @@ function blacklist_match(PDO $pdo, int $tenantId, int $registerId, string $email
   $stmt->execute([$tenantId, $registerId, $emailNorm]);
   $row = $stmt->fetch();
   return $row ?: null;
+}
+
+function blacklist_reason_text(?string $reason): string
+{
+  $trimmed = trim((string)$reason);
+  return $trimmed !== '' ? $trimmed : 'No reason provided';
 }
 
 function collect_blacklisted_user_ids(PDO $pdo, int $tenantId, ?int $registerId, ?string $emailNorm): array
@@ -247,23 +550,295 @@ if ($page === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
     $email = trim((string)($_POST['email'] ?? ''));
     $password = (string)($_POST['password'] ?? '');
 
-    $stmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, password_hash FROM users WHERE email = ? AND is_active = 1 LIMIT 1');
-    $stmt->execute([$email]);
-    $user = $stmt->fetch();
+    $user = find_active_user_by_email($pdo, $email);
 
     if ($user && password_verify($password, $user['password_hash'])) {
-        $_SESSION['user'] = [
-            'id' => (int)$user['id'],
-            'tenant_id' => (int)$user['tenant_id'],
-            'name' => $user['full_name'],
-            'email' => $user['email'],
-            'role' => $user['role'],
-        ];
+      ensure_user_profile_exists($pdo, (int)$user['id'], (string)$user['full_name']);
+      set_user_session($user);
         header('Location: /?page=dashboard');
         exit;
     }
 
     $error = 'Invalid credentials';
+}
+
+  if ($page === 'login_otp_request' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
+    require_csrf();
+    $email = trim((string)($_POST['email'] ?? ''));
+
+    if (!otp_ready($config)) {
+      $error = 'OTP login is not configured yet.';
+    } else {
+      $user = find_active_user_by_email($pdo, $email);
+      if ($user) {
+        issue_email_otp($pdo, $config, $user);
+        $_SESSION['otp_user_id'] = (int)$user['id'];
+        $_SESSION['otp_user_email'] = (string)$user['email'];
+      }
+      $message = 'If the account exists, an OTP code has been sent to email.';
+    }
+    $page = 'login';
+  }
+
+  if ($page === 'login_otp_verify' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
+    require_csrf();
+    $code = trim((string)($_POST['otp_code'] ?? ''));
+    $otpUserId = (int)($_SESSION['otp_user_id'] ?? 0);
+
+    if ($otpUserId <= 0) {
+      $error = 'Request OTP first.';
+    } elseif ($code === '') {
+      $error = 'Enter the OTP code.';
+    } elseif (!verify_email_otp($pdo, $otpUserId, $code)) {
+      $error = 'Invalid or expired OTP code.';
+    } else {
+      $stmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, password_hash FROM users WHERE id = ? AND is_active = 1 LIMIT 1');
+      $stmt->execute([$otpUserId]);
+      $user = $stmt->fetch();
+      if (!$user) {
+        $error = 'Account is unavailable.';
+      } else {
+          ensure_user_profile_exists($pdo, (int)$user['id'], (string)$user['full_name']);
+        set_user_session($user);
+        unset($_SESSION['otp_user_id'], $_SESSION['otp_user_email']);
+        header('Location: /?page=dashboard');
+        exit;
+      }
+    }
+    $page = 'login';
+  }
+
+  if ($page === 'auth_microsoft_start') {
+    if (!microsoft_oauth_ready($config)) {
+      $error = 'Microsoft OAuth is not configured.';
+      $page = 'login';
+    } else {
+      header('Location: ' . microsoft_authorize_url($config));
+      exit;
+    }
+  }
+
+  if ($page === 'auth_microsoft_callback' && $pdo) {
+    $state = (string)($_GET['state'] ?? '');
+    $code = (string)($_GET['code'] ?? '');
+    $savedState = (string)($_SESSION['ms_oauth_state'] ?? '');
+
+    if ($state === '' || $savedState === '' || !hash_equals($savedState, $state)) {
+      $error = 'OAuth state validation failed.';
+      $page = 'login';
+    } elseif ($code === '') {
+      $error = 'Microsoft OAuth code is missing.';
+      $page = 'login';
+    } else {
+      unset($_SESSION['ms_oauth_state']);
+      $tenantId = (string)$config['microsoft']['tenant_id'];
+      $tokenUrl = 'https://login.microsoftonline.com/' . rawurlencode($tenantId) . '/oauth2/v2.0/token';
+
+      $tokenPayload = http_build_query([
+        'client_id' => (string)$config['microsoft']['client_id'],
+        'scope' => 'openid profile email offline_access',
+        'code' => $code,
+        'redirect_uri' => (string)$config['microsoft']['redirect_uri'],
+        'grant_type' => 'authorization_code',
+        'client_secret' => (string)$config['microsoft']['client_secret'],
+      ]);
+
+      $ch = curl_init($tokenUrl);
+      if ($ch === false) {
+        $error = 'OAuth initialization failed.';
+        $page = 'login';
+      } else {
+        curl_setopt_array($ch, [
+          CURLOPT_POST => true,
+          CURLOPT_RETURNTRANSFER => true,
+          CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
+          CURLOPT_POSTFIELDS => $tokenPayload,
+          CURLOPT_TIMEOUT => 10,
+        ]);
+        $tokenResponse = curl_exec($ch);
+        $tokenData = is_string($tokenResponse) ? json_decode($tokenResponse, true) : null;
+        $accessToken = is_array($tokenData) ? (string)($tokenData['access_token'] ?? '') : '';
+
+        if ($accessToken === '') {
+          $error = 'Microsoft token exchange failed.';
+          $page = 'login';
+        } else {
+          curl_setopt_array($ch, [
+            CURLOPT_HTTPGET => true,
+            CURLOPT_POST => false,
+            CURLOPT_URL => 'https://graph.microsoft.com/oidc/userinfo',
+            CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $accessToken],
+            CURLOPT_POSTFIELDS => null,
+          ]);
+          $profileResponse = curl_exec($ch);
+          $profile = is_string($profileResponse) ? json_decode($profileResponse, true) : null;
+          $email = microsoft_extract_email(is_array($profile) ? $profile : null, is_array($tokenData) ? $tokenData : null);
+          $displayName = is_array($profile) ? (string)($profile['name'] ?? '') : '';
+
+          if ($email === '') {
+            $error = 'Microsoft account email not available.';
+            $page = 'login';
+          } else {
+            $user = find_active_user_by_email($pdo, $email);
+            if (!$user) {
+              $user = microsoft_provision_user_if_allowed($pdo, $config, $email, $displayName);
+            }
+
+            if (!$user) {
+              $error = 'No local account found for this Microsoft email, and auto-provisioning is not allowed for this domain.';
+              $page = 'login';
+            } else {
+              ensure_user_profile_exists($pdo, (int)$user['id'], (string)$user['full_name']);
+              set_user_session($user);
+              header('Location: /?page=dashboard');
+              exit;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if ($page === 'auth_google_start') {
+    if (!google_oauth_ready($config)) {
+      $error = 'Google OAuth is not configured.';
+      $page = 'login';
+    } else {
+      header('Location: ' . google_authorize_url($config));
+      exit;
+    }
+  }
+
+  if ($page === 'auth_google_callback' && $pdo) {
+    $state = (string)($_GET['state'] ?? '');
+    $code = (string)($_GET['code'] ?? '');
+    $savedState = (string)($_SESSION['google_oauth_state'] ?? '');
+
+    if ($state === '' || $savedState === '' || !hash_equals($savedState, $state)) {
+      $error = 'OAuth state validation failed.';
+      $page = 'login';
+    } elseif ($code === '') {
+      $error = 'Google OAuth code is missing.';
+      $page = 'login';
+    } else {
+      unset($_SESSION['google_oauth_state']);
+      $tokenUrl = 'https://oauth2.googleapis.com/token';
+      $tokenPayload = http_build_query([
+        'client_id' => (string)$config['google']['client_id'],
+        'client_secret' => (string)$config['google']['client_secret'],
+        'code' => $code,
+        'grant_type' => 'authorization_code',
+        'redirect_uri' => (string)$config['google']['redirect_uri'],
+      ]);
+
+      $ch = curl_init($tokenUrl);
+      if ($ch === false) {
+        $error = 'OAuth initialization failed.';
+        $page = 'login';
+      } else {
+        curl_setopt_array($ch, [
+          CURLOPT_POST => true,
+          CURLOPT_RETURNTRANSFER => true,
+          CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
+          CURLOPT_POSTFIELDS => $tokenPayload,
+          CURLOPT_TIMEOUT => 10,
+        ]);
+        $tokenResponse = curl_exec($ch);
+        $tokenData = is_string($tokenResponse) ? json_decode($tokenResponse, true) : null;
+        $accessToken = is_array($tokenData) ? (string)($tokenData['access_token'] ?? '') : '';
+
+        if ($accessToken === '') {
+          $error = 'Google token exchange failed.';
+          $page = 'login';
+        } else {
+          curl_setopt_array($ch, [
+            CURLOPT_HTTPGET => true,
+            CURLOPT_POST => false,
+            CURLOPT_URL => 'https://openidconnect.googleapis.com/v1/userinfo',
+            CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $accessToken],
+            CURLOPT_POSTFIELDS => null,
+          ]);
+          $profileResponse = curl_exec($ch);
+          $profile = is_string($profileResponse) ? json_decode($profileResponse, true) : null;
+          $email = microsoft_extract_email(is_array($profile) ? $profile : null, is_array($tokenData) ? $tokenData : null);
+          $displayName = is_array($profile) ? (string)($profile['name'] ?? '') : '';
+
+          if ($email === '') {
+            $error = 'Google account email not available.';
+            $page = 'login';
+          } else {
+            $user = find_active_user_by_email($pdo, $email);
+            if (!$user) {
+              $user = google_provision_user_if_allowed($pdo, $config, $email, $displayName);
+            }
+
+            if (!$user) {
+              $error = 'No local account found for this Google email, and auto-provisioning is not allowed for this domain.';
+              $page = 'login';
+            } else {
+              ensure_user_profile_exists($pdo, (int)$user['id'], (string)$user['full_name']);
+              set_user_session($user);
+              header('Location: /?page=dashboard');
+              exit;
+            }
+          }
+        }
+      }
+    }
+  }
+
+if ($page === 'profile_save' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
+  require_csrf();
+  $actor = require_login();
+  $result = handle_profile_save_request($pdo, $actor, $_POST);
+  $error = (string)$result['error'];
+  $message = (string)$result['message'];
+  $page = (string)$result['page'];
+  if ($result['target_user_id'] !== null) {
+    $_GET['user_id'] = (string)$result['target_user_id'];
+  }
+}
+
+if ($page === 'profile_export' && $pdo) {
+  $actor = require_login();
+  $canViewProfiles = can_view_profiles($actor);
+  $targetUserId = (int)($_GET['user_id'] ?? $actor['id']);
+  if (!$canViewProfiles) {
+    $targetUserId = (int)$actor['id'];
+  }
+
+  $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
+  $targetStmt->execute([$targetUserId, (int)$actor['tenant_id']]);
+  $targetUser = $targetStmt->fetch();
+  if (!$targetUser) {
+    http_response_code(404);
+    exit('Profile target user not found');
+  }
+
+  $filters = normalize_profile_application_filters($_GET);
+  $applications = fetch_profile_student_applications($pdo, (int)$actor['tenant_id'], (int)$targetUserId, $filters);
+
+  $filename = 'student-applications-user-' . (string)(int)$targetUserId . '.csv';
+  header('Content-Type: text/csv; charset=UTF-8');
+  header('Content-Disposition: attachment; filename="' . $filename . '"');
+
+  $out = fopen('php://output', 'wb');
+  if ($out === false) {
+    http_response_code(500);
+    exit('Unable to export CSV');
+  }
+
+  fputcsv($out, ['application_id', 'scholarship', 'status', 'created_at'], ',', '"', '\\');
+  foreach ($applications as $row) {
+    fputcsv($out, [
+      (string)(int)$row['id'],
+      (string)$row['scholarship_title'],
+      (string)$row['status'],
+      (string)$row['created_at'],
+    ], ',', '"', '\\');
+  }
+  fclose($out);
+  exit;
 }
 
 if ($page === 'apply' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
@@ -274,6 +849,14 @@ if ($page === 'apply' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
         exit('Forbidden');
     }
 
+    ensure_user_profile_exists($pdo, (int)$user['id'], (string)$user['name']);
+    $selfProfile = get_user_profile($pdo, (int)$user['id']);
+    if (!$selfProfile || !is_profile_complete($user, $selfProfile)) {
+      $missing = $selfProfile ? profile_missing_required_fields($user, $selfProfile) : ['profile'];
+      $error = 'Complete profile first. Missing fields: ' . implode(', ', $missing);
+      $page = 'profile';
+      $_GET['user_id'] = (string)$user['id'];
+    } else {
     $scholarshipId = (int)($_POST['scholarship_id'] ?? 0);
     $stmt = $pdo->prepare('SELECT id, form_schema_json FROM scholarships WHERE id = ? AND tenant_id = ? AND status = "published" LIMIT 1');
     $stmt->execute([$scholarshipId, $user['tenant_id']]);
@@ -285,7 +868,7 @@ if ($page === 'apply' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
 
     $blacklist = blacklist_match($pdo, (int)$user['tenant_id'], (int)$user['id'], (string)$user['email']);
     if ($blacklist) {
-      $reason = 'Blacklisted: ' . (string)$blacklist['reason'];
+      $reason = 'Blacklisted: ' . blacklist_reason_text($blacklist['reason'] ?? null);
       $stmt = $pdo->prepare('INSERT INTO applications (tenant_id, scholarship_id, student_id, answers_json, status, rejection_reason) VALUES (?, ?, ?, ?, "rejected", ?)');
       $stmt->execute([
         $user['tenant_id'],
@@ -374,6 +957,7 @@ if ($page === 'apply' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
       $page = 'dashboard';
     }
     }
+    }
 }
 
 if ($page === 'blacklist_add' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
@@ -391,8 +975,6 @@ if ($page === 'blacklist_add' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) 
 
   if ($registerId <= 0 && $emailNorm === null) {
     $error = 'Provide register_id or email.';
-  } elseif ($reason === '') {
-    $error = 'Blacklist reason is required for compliance and audit traceability.';
   } else {
     $insert = $pdo->prepare('INSERT INTO blacklist_entries (tenant_id, register_id, email_original, email_normalized, reason, created_by) VALUES (?, ?, ?, ?, ?, ?)');
     $insert->execute([
@@ -400,12 +982,12 @@ if ($page === 'blacklist_add' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) 
       $registerId > 0 ? $registerId : null,
       $email !== '' ? $email : null,
       $emailNorm,
-      $reason,
+      $reason !== '' ? $reason : null,
       $user['id'],
     ]);
 
     $matchedUserIds = collect_blacklisted_user_ids($pdo, (int)$user['tenant_id'], $registerId > 0 ? $registerId : null, $emailNorm);
-    $rejectedCount = reject_inflight_applications($pdo, (int)$user['tenant_id'], $matchedUserIds, (int)$user['id'], 'Blacklisted: ' . $reason);
+    $rejectedCount = reject_inflight_applications($pdo, (int)$user['tenant_id'], $matchedUserIds, (int)$user['id'], 'Blacklisted: ' . blacklist_reason_text($reason));
     $message = 'Blacklist entry added. Auto-rejected in-flight applications: ' . (string)$rejectedCount;
     $page = 'dashboard';
   }
@@ -448,8 +1030,8 @@ if ($page === 'blacklist_import' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pd
       $idxEmail = array_search('email', $headers, true);
       $idxReason = array_search('reason', $headers, true);
 
-      if ($idxReason === false || ($idxRegister === false && $idxEmail === false)) {
-        $error = 'Missing required headers. Use register_id,email,reason';
+      if ($idxRegister === false && $idxEmail === false) {
+        $error = 'Missing required headers. Use register_id and/or email';
       } else {
         $inserted = 0;
         $rejectedTotal = 0;
@@ -459,9 +1041,9 @@ if ($page === 'blacklist_import' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pd
           $registerId = $idxRegister !== false ? (int)trim((string)($row[$idxRegister] ?? '0')) : 0;
           $email = $idxEmail !== false ? trim((string)($row[$idxEmail] ?? '')) : '';
           $emailNorm = $email !== '' ? normalize_email($email) : null;
-          $reason = trim((string)($row[$idxReason] ?? ''));
+          $reason = $idxReason !== false ? trim((string)($row[$idxReason] ?? '')) : '';
 
-          if ($reason === '' || ($registerId <= 0 && $emailNorm === null)) {
+          if ($registerId <= 0 && $emailNorm === null) {
             continue;
           }
 
@@ -470,13 +1052,13 @@ if ($page === 'blacklist_import' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pd
             $registerId > 0 ? $registerId : null,
             $email !== '' ? $email : null,
             $emailNorm,
-            $reason,
+            $reason !== '' ? $reason : null,
             $user['id'],
           ]);
           $inserted++;
 
           $matchedUserIds = collect_blacklisted_user_ids($pdo, (int)$user['tenant_id'], $registerId > 0 ? $registerId : null, $emailNorm);
-          $rejectedTotal += reject_inflight_applications($pdo, (int)$user['tenant_id'], $matchedUserIds, (int)$user['id'], 'Blacklisted: ' . $reason);
+          $rejectedTotal += reject_inflight_applications($pdo, (int)$user['tenant_id'], $matchedUserIds, (int)$user['id'], 'Blacklisted: ' . blacklist_reason_text($reason));
         }
         $message = 'Blacklist import complete. Inserted: ' . (string)$inserted . ', Auto-rejected in-flight: ' . (string)$rejectedTotal;
         $page = 'dashboard';
@@ -593,6 +1175,7 @@ $user = current_user();
       <nav>
         <?php if ($user): ?>
           <a href="/?page=dashboard">Dashboard</a>
+          <a href="/?page=profile">Profile</a>
           <a href="/?page=logout">Logout</a>
         <?php else: ?>
           <a href="/?page=login">Login</a>
@@ -630,200 +1213,48 @@ $user = current_user();
         <button class="btn primary" type="submit">Sign in</button>
       </form>
 
-    <?php elseif ($page === 'dashboard' && $user): ?>
-      <h2><?= h(ucfirst($user['role'])) ?> Dashboard</h2>
-      <p>Welcome, <?= h($user['name']) ?> (Tenant #<?= (int)$user['tenant_id'] ?>)</p>
+      <hr>
+      <h3>Email OTP Login</h3>
+      <form method="post" action="/?page=login_otp_request">
+        <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+        <label>Email</label>
+        <input name="email" type="email" required>
+        <br><br>
+        <button class="btn" type="submit">Send OTP</button>
+      </form>
 
-      <?php if ($pdo): ?>
-        <?php if ($user['role'] === 'student'): ?>
-          <?php
-            $stmt = $pdo->prepare('SELECT id, title, description, form_schema_json FROM scholarships WHERE tenant_id = ? AND status = "published" ORDER BY id DESC');
-            $stmt->execute([$user['tenant_id']]);
-            $scholarships = $stmt->fetchAll();
-          ?>
-          <div class="grid">
-            <?php foreach ($scholarships as $s): ?>
-              <div class="card">
-                <h3><?= h($s['title']) ?></h3>
-                <p><?= h((string)$s['description']) ?></p>
-                <form method="post" action="/?page=apply">
-                  <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
-                  <input type="hidden" name="scholarship_id" value="<?= (int)$s['id'] ?>">
-                  <?php
-                    $schema = normalize_form_schema(json_decode((string)$s['form_schema_json'], true));
-                    foreach ($schema as $field) {
-                        render_dynamic_field($field);
-                    }
-                  ?>
-                  <br>
-                  <button class="btn primary" type="submit">Submit Application</button>
-                </form>
-              </div>
-            <?php endforeach; ?>
-          </div>
-
-        <?php else: ?>
-          <?php if ($user['role'] === 'admin'): ?>
-            <div class="card" style="margin-bottom: 14px;">
-              <h3>Create Scholarship</h3>
-              <form method="post" action="/?page=create_scholarship" id="create-scholarship-form">
-                <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
-                <input type="hidden" name="form_schema_json" id="form_schema_json" value="[]">
-
-                <label>Title</label>
-                <input name="title" required>
-
-                <label>Description</label>
-                <textarea name="description" rows="3"></textarea>
-
-                <label>Status</label>
-                <select name="status">
-                  <option value="draft">Draft</option>
-                  <option value="published">Published</option>
-                  <option value="closed">Closed</option>
-                </select>
-
-                <h4>Form Fields</h4>
-                <div id="fields-builder"></div>
-                <button class="btn" type="button" id="add-field-btn">Add Field</button>
-                <button class="btn primary" type="submit">Create Scholarship</button>
-              </form>
-            </div>
-          <?php endif; ?>
-          <?php if (in_array($user['role'], ['admin', 'it'], true)): ?>
-            <div class="card" style="margin-bottom: 14px;">
-              <h3>Blacklist Management</h3>
-              <p>Unique matching keys: register_id and normalized email.</p>
-              <form method="post" action="/?page=blacklist_add">
-                <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
-                <label>register_id (optional if email is provided)</label>
-                <input type="number" name="register_id" min="1" placeholder="e.g. 125">
-                <label>Email (optional if register_id is provided)</label>
-                <input type="email" name="email" placeholder="student@example.com">
-                <label>Reason (mandatory)</label>
-                <input name="reason" required placeholder="Example: Fraud attempt / Duplicate identity">
-                <br>
-                <button class="btn" type="submit">Add Blacklist Entry</button>
-              </form>
-
-              <h4 style="margin-top:14px;">Import Excel/CSV</h4>
-              <p>Headers required: register_id,email,reason</p>
-              <form method="post" action="/?page=blacklist_import" enctype="multipart/form-data">
-                <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
-                <input type="file" name="blacklist_file" accept=".csv,.xlsx" required>
-                <button class="btn" type="submit">Import Blacklist File</button>
-              </form>
-            </div>
-          <?php endif; ?>
-          <?php
-            $stmt = $pdo->prepare('SELECT a.id, a.status, a.rejection_reason, a.created_at, u.full_name AS student_name, s.title AS scholarship_title
-                                   FROM applications a
-                                   JOIN users u ON u.id = a.student_id
-                                   JOIN scholarships s ON s.id = a.scholarship_id
-                                   WHERE a.tenant_id = ?
-                                   ORDER BY a.id DESC LIMIT 20');
-            $stmt->execute([$user['tenant_id']]);
-            $applications = $stmt->fetchAll();
-
-            $newUsersStmt = $pdo->prepare('SELECT id, full_name, email, role, created_at FROM users WHERE tenant_id = ? AND created_at >= (NOW() - INTERVAL 7 DAY) ORDER BY id DESC LIMIT 30');
-            $newUsersStmt->execute([$user['tenant_id']]);
-            $newUsers = $newUsersStmt->fetchAll();
-
-            $oldUsersStmt = $pdo->prepare('SELECT id, full_name, email, role, created_at FROM users WHERE tenant_id = ? AND created_at < (NOW() - INTERVAL 7 DAY) ORDER BY id DESC LIMIT 30');
-            $oldUsersStmt->execute([$user['tenant_id']]);
-            $oldUsers = $oldUsersStmt->fetchAll();
-
-            $blacklistStmt = $pdo->prepare('SELECT register_id, email_original, reason, created_at FROM blacklist_entries WHERE tenant_id = ? ORDER BY id DESC LIMIT 50');
-            $blacklistStmt->execute([$user['tenant_id']]);
-            $blacklistRows = $blacklistStmt->fetchAll();
-          ?>
-          <div class="grid" style="margin-bottom: 14px;">
-            <div class="card">
-              <h3>New Registrations (7 days)</h3>
-              <table class="table">
-                <thead><tr><th>register_id</th><th>Name</th><th>Email</th><th>Role</th></tr></thead>
-                <tbody>
-                <?php foreach ($newUsers as $u): ?>
-                  <tr>
-                    <td><?= (int)$u['id'] ?></td>
-                    <td><?= h($u['full_name']) ?></td>
-                    <td><?= h($u['email']) ?></td>
-                    <td><?= h($u['role']) ?></td>
-                  </tr>
-                <?php endforeach; ?>
-                </tbody>
-              </table>
-            </div>
-            <div class="card">
-              <h3>Old Registrations</h3>
-              <table class="table">
-                <thead><tr><th>register_id</th><th>Name</th><th>Email</th><th>Role</th></tr></thead>
-                <tbody>
-                <?php foreach ($oldUsers as $u): ?>
-                  <tr>
-                    <td><?= (int)$u['id'] ?></td>
-                    <td><?= h($u['full_name']) ?></td>
-                    <td><?= h($u['email']) ?></td>
-                    <td><?= h($u['role']) ?></td>
-                  </tr>
-                <?php endforeach; ?>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div class="card" style="margin-bottom:14px;">
-            <h3>Blacklist Table</h3>
-            <table class="table">
-              <thead><tr><th>register_id</th><th>Email</th><th>Reason</th><th>Created</th></tr></thead>
-              <tbody>
-              <?php foreach ($blacklistRows as $b): ?>
-                <tr>
-                  <td><?= h((string)($b['register_id'] ?? '')) ?></td>
-                  <td><?= h((string)($b['email_original'] ?? '')) ?></td>
-                  <td><?= h($b['reason']) ?></td>
-                  <td><?= h($b['created_at']) ?></td>
-                </tr>
-              <?php endforeach; ?>
-              </tbody>
-            </table>
-          </div>
-
-          <table class="table">
-            <thead>
-              <tr>
-                <th>ID</th><th>Student</th><th>Scholarship</th><th>Status</th><th>Created</th>
-                <?php if (in_array($user['role'], ['admin', 'manager'], true)): ?><th>Action</th><?php endif; ?>
-              </tr>
-            </thead>
-            <tbody>
-              <?php foreach ($applications as $a): ?>
-                <tr>
-                  <td><?= (int)$a['id'] ?></td>
-                  <td><?= h($a['student_name']) ?></td>
-                  <td><?= h($a['scholarship_title']) ?></td>
-                  <td><span class="badge"><?= h($a['status']) ?></span></td>
-                  <td><?= h($a['created_at']) ?></td>
-                  <?php if (in_array($user['role'], ['admin', 'manager'], true)): ?>
-                    <td>
-                      <form method="post" action="/?page=decide">
-                        <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
-                        <input type="hidden" name="application_id" value="<?= (int)$a['id'] ?>">
-                        <select name="status">
-                          <option value="approved">Approve</option>
-                          <option value="rejected">Reject</option>
-                        </select>
-                        <input name="reason" placeholder="Reason (optional)">
-                        <button class="btn" type="submit">Save</button>
-                      </form>
-                    </td>
-                  <?php endif; ?>
-                </tr>
-              <?php endforeach; ?>
-            </tbody>
-          </table>
-        <?php endif; ?>
+      <?php if (!empty($_SESSION['otp_user_email'])): ?>
+        <form method="post" action="/?page=login_otp_verify" style="margin-top: 10px;">
+          <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+          <p>OTP sent to: <strong><?= h((string)$_SESSION['otp_user_email']) ?></strong></p>
+          <label>OTP Code</label>
+          <input name="otp_code" type="text" inputmode="numeric" maxlength="10" required>
+          <br><br>
+          <button class="btn primary" type="submit">Verify OTP</button>
+        </form>
       <?php endif; ?>
+
+      <hr>
+      <h3>Microsoft Login</h3>
+      <?php if (microsoft_oauth_ready($config)): ?>
+        <a class="btn" href="/?page=auth_microsoft_start">Sign in with Microsoft</a>
+      <?php else: ?>
+        <p>Microsoft OAuth is not fully configured yet.</p>
+      <?php endif; ?>
+
+      <hr>
+      <h3>Google Login</h3>
+      <?php if (google_oauth_ready($config)): ?>
+        <a class="btn" href="/?page=auth_google_start">Sign in with Google</a>
+      <?php else: ?>
+        <p>Google OAuth is not fully configured yet.</p>
+      <?php endif; ?>
+
+    <?php elseif ($page === 'profile' && $user && $pdo): ?>
+      <?php require __DIR__ . '/views/profile.php'; ?>
+
+    <?php elseif ($page === 'dashboard' && $user): ?>
+      <?php require __DIR__ . '/views/dashboard.php'; ?>
 
     <?php else: ?>
       <h2>Not found</h2>

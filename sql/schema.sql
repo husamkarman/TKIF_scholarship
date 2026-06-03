@@ -69,11 +69,49 @@ CREATE TABLE IF NOT EXISTS blacklist_entries (
   register_id BIGINT UNSIGNED NULL,
   email_original VARCHAR(190) NULL,
   email_normalized VARCHAR(190) NULL,
-  reason VARCHAR(255) NOT NULL,
+  reason VARCHAR(255) NULL,
   created_by BIGINT UNSIGNED NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_blacklist_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
   CONSTRAINT fk_blacklist_creator FOREIGN KEY (created_by) REFERENCES users(id),
   INDEX idx_blacklist_tenant_register (tenant_id, register_id),
   INDEX idx_blacklist_tenant_email (tenant_id, email_normalized)
+);
+
+CREATE TABLE IF NOT EXISTS otp_codes (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  tenant_id BIGINT UNSIGNED NOT NULL,
+  user_id BIGINT UNSIGNED NOT NULL,
+  email VARCHAR(190) NOT NULL,
+  otp_hash VARCHAR(255) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  consumed_at DATETIME NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_otp_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+  CONSTRAINT fk_otp_user FOREIGN KEY (user_id) REFERENCES users(id),
+  INDEX idx_otp_user_created (user_id, created_at),
+  INDEX idx_otp_expires (expires_at)
+);
+
+CREATE TABLE IF NOT EXISTS user_profiles (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  first_name VARCHAR(120) NULL,
+  middle_name VARCHAR(120) NULL,
+  last_name VARCHAR(120) NULL,
+  date_of_birth DATE NULL,
+  nationality VARCHAR(120) NULL,
+  phone_country_code VARCHAR(10) NULL,
+  phone_number VARCHAR(30) NULL,
+  whatsapp_number VARCHAR(30) NULL,
+  secondary_email VARCHAR(190) NULL,
+  address_country VARCHAR(120) NULL,
+  address_city VARCHAR(120) NULL,
+  address_zip_code VARCHAR(40) NULL,
+  address_text TEXT NULL,
+  auth_provider_id VARCHAR(190) NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_profiles_user FOREIGN KEY (user_id) REFERENCES users(id),
+  UNIQUE KEY uq_profile_user (user_id)
 );

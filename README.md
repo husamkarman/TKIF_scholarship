@@ -48,8 +48,26 @@ This repository is a local starter for:
 4. Activate workflow
 
 ## Next Build Step
-- Add OTP + Google/Microsoft auth integration.
+- Add Google auth integration.
 - Add WhatsApp/SMS providers when keys are available.
+
+## Auth (Step 5)
+1. Email OTP login is enabled (via SMTP).
+2. Microsoft OAuth login is enabled when these `.env` values exist:
+   - `MICROSOFT_CLIENT_ID`
+   - `MICROSOFT_TENANT_ID`
+   - `MICROSOFT_REDIRECT_URI`
+   - `MICROSOFT_CLIENT_SECRET`
+3. First-time Microsoft users can be auto-provisioned to local users when allowed by config:
+   - `MICROSOFT_AUTO_PROVISION=true`
+   - `MICROSOFT_ALLOWED_DOMAIN=rawasy.com`
+   - `MICROSOFT_DEFAULT_ROLE=student`
+   - `MICROSOFT_DEFAULT_TENANT_CODE=TKIFMS001`
+4. Google OAuth login uses equivalent settings:
+   - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`
+   - `GOOGLE_AUTO_PROVISION`, `GOOGLE_ALLOWED_DOMAIN`, `GOOGLE_DEFAULT_ROLE`, `GOOGLE_DEFAULT_TENANT_CODE`
+5. Run tenant bootstrap migration once:
+   - `mysql -u root -p < sql/migrations/20260603_add_provider_tenants.sql`
 
 ## Blacklist (Step 4)
 1. Matching keys:
@@ -62,5 +80,6 @@ This repository is a local starter for:
    - Admin/IT can add blacklist rows from dashboard quickly.
 4. Import file:
    - Supported: `.csv`, `.xlsx`
-   - Required headers: `register_id,email,reason`
-   - `reason` is mandatory for compliance auditability.
+   - Supported headers: `register_id,email,reason`
+   - `register_id` and/or `email` must exist per row.
+   - `reason` is optional.

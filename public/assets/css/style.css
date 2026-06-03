@@ -66,6 +66,19 @@ label {
   font-weight: 600;
 }
 
+.lock-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #7a5a00;
+  background: #fff6d8;
+  border: 1px solid #f2d277;
+  vertical-align: middle;
+}
+
 input, textarea, select {
   width: 100%;
   padding: 8px;

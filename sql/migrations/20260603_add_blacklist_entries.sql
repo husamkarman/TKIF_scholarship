@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS blacklist_entries (
   register_id BIGINT UNSIGNED NULL,
   email_original VARCHAR(190) NULL,
   email_normalized VARCHAR(190) NULL,
-  reason VARCHAR(255) NOT NULL,
+  reason VARCHAR(255) NULL,
   created_by BIGINT UNSIGNED NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_blacklist_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
