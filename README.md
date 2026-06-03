@@ -38,6 +38,14 @@ This repository is a local starter for:
    - Student application submitted
    - Admin/Manager application decision (approved/rejected)
 
+## Security Rotation (Step 1)
+1. Rotate exposed secrets at provider side first (SMTP, Microsoft, Google, DB, N8N).
+2. Update `.env` with new values.
+3. Run env security check:
+   - `bash scripts/check_env_security.sh .env`
+4. Follow full runbook:
+   - `SECURITY_ROTATION.md`
+
 ## n8n Quick Start
 1. Start n8n:
    - `docker compose -f docker-compose.n8n.yml up -d`
@@ -50,6 +58,22 @@ This repository is a local starter for:
 ## Next Build Step
 - Add Google auth integration.
 - Add WhatsApp/SMS providers when keys are available.
+
+## Profile Query Performance
+Run this migration to optimize profile application history filters/export:
+- `mysql -u root -p < sql/migrations/20260603_add_application_filter_indexes.sql`
+
+## Acceptance Smoke Test (One Command)
+Run end-to-end smoke validations (login, apply, profile filters, CSV export, admin user-type update):
+- `bash scripts/acceptance_smoke.sh http://localhost:8080`
+
+## CI Validation
+GitHub Actions workflow runs the same smoke test automatically on push and pull requests:
+- `.github/workflows/acceptance-smoke.yml`
+
+## Branch Protection (Recommended)
+Require CI before merge using this guide:
+- `BRANCH_PROTECTION.md`
 
 ## Auth (Step 5)
 1. Email OTP login is enabled (via SMTP).
@@ -68,6 +92,28 @@ This repository is a local starter for:
    - `GOOGLE_AUTO_PROVISION`, `GOOGLE_ALLOWED_DOMAIN`, `GOOGLE_DEFAULT_ROLE`, `GOOGLE_DEFAULT_TENANT_CODE`
 5. Run tenant bootstrap migration once:
    - `mysql -u root -p < sql/migrations/20260603_add_provider_tenants.sql`
+
+## Identity Linking (No Duplicates)
+Apply in this order:
+1. Add identity table:
+   - `mysql -u root -p < sql/migrations/20260603_add_user_identities.sql`
+2. Merge existing duplicate users safely (dry-run first):
+   - `php scripts/merge_duplicate_users.php`
+   - `php scripts/merge_duplicate_users.php --apply`
+3. Enforce globally unique user email:
+   - `mysql -u root -p < sql/migrations/20260603_enforce_unique_user_email.sql`
+4. Use Identity Diagnostics page (Admin/IT only):
+   - `/?page=identity_diagnostics`
+   - Shows provider link coverage, duplicate-email detection, and pending backfill candidates.
+   - CSV export for pending backfill candidates:
+     - `/?page=identity_diagnostics_export`
+
+## Role Hierarchy
+- `IT > Admin > Manager > Student`
+- IT can control/edit Admin, Manager, and Student profiles.
+- Admin can control/edit Manager and Student profiles (not IT).
+- Manager can control/edit Student profiles only.
+- Users can still edit their own basic profile fields.
 
 ## Blacklist (Step 4)
 1. Matching keys:

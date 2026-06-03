@@ -78,6 +78,73 @@ function find_active_user_by_email(PDO $pdo, string $email): ?array
   return $user ?: null;
 }
 
+function identity_table_ready(PDO $pdo): bool
+{
+  static $ready = null;
+  if (is_bool($ready)) {
+    return $ready;
+  }
+
+  try {
+    $stmt = $pdo->query("SHOW TABLES LIKE 'user_identities'");
+    $ready = $stmt !== false && (bool)$stmt->fetchColumn();
+  } catch (Throwable) {
+    $ready = false;
+  }
+
+  return $ready;
+}
+
+function find_active_user_by_identity(PDO $pdo, string $provider, string $providerUserId): ?array
+{
+  $provider = trim(strtolower($provider));
+  $providerUserId = trim($providerUserId);
+  if ($provider === '' || $providerUserId === '' || !identity_table_ready($pdo)) {
+    return null;
+  }
+
+  $stmt = $pdo->prepare(
+    'SELECT u.id, u.tenant_id, u.full_name, u.email, u.role, u.password_hash
+     FROM user_identities i
+     INNER JOIN users u ON u.id = i.user_id
+     WHERE i.provider = ? AND i.provider_user_id = ? AND u.is_active = 1
+     LIMIT 1'
+  );
+  $stmt->execute([$provider, $providerUserId]);
+  $user = $stmt->fetch();
+  return $user ?: null;
+}
+
+function upsert_user_identity(PDO $pdo, int $userId, string $provider, string $providerUserId, string $providerEmail): bool
+{
+  $provider = trim(strtolower($provider));
+  $providerUserId = trim($providerUserId);
+  if ($provider === '' || $providerUserId === '' || !identity_table_ready($pdo)) {
+    return true;
+  }
+
+  $providerEmail = normalize_email($providerEmail);
+
+  $existing = $pdo->prepare('SELECT user_id FROM user_identities WHERE provider = ? AND provider_user_id = ? LIMIT 1');
+  $existing->execute([$provider, $providerUserId]);
+  $existingRow = $existing->fetch();
+  if ($existingRow && (int)$existingRow['user_id'] !== $userId) {
+    return false;
+  }
+
+  $stmt = $pdo->prepare(
+    'INSERT INTO user_identities (user_id, provider, provider_user_id, provider_email)
+     VALUES (?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       provider_user_id = VALUES(provider_user_id),
+       provider_email = VALUES(provider_email),
+       updated_at = CURRENT_TIMESTAMP'
+  );
+  $stmt->execute([$userId, $provider, $providerUserId, $providerEmail]);
+
+  return true;
+}
+
 function otp_ready(array $config): bool
 {
   return ($config['otp']['enabled'] ?? false) && smtp_is_ready($config);
@@ -170,6 +237,28 @@ function microsoft_authorize_url(array $config): string
   return 'https://login.microsoftonline.com/' . rawurlencode($tenantId) . '/oauth2/v2.0/authorize?' . $query;
 }
 
+function decode_jwt_claims(?string $jwt): ?array
+{
+  if (!is_string($jwt) || trim($jwt) === '') {
+    return null;
+  }
+
+  $parts = explode('.', $jwt);
+  if (count($parts) < 2) {
+    return null;
+  }
+
+  $payload = $parts[1];
+  $payload .= str_repeat('=', (4 - strlen($payload) % 4) % 4);
+  $decoded = base64_decode(strtr($payload, '-_', '+/'), true);
+  if (!is_string($decoded)) {
+    return null;
+  }
+
+  $claims = json_decode($decoded, true);
+  return is_array($claims) ? $claims : null;
+}
+
   function microsoft_extract_email(?array $profile, ?array $tokenData): string
   {
     $candidates = [];
@@ -181,19 +270,11 @@ function microsoft_authorize_url(array $config): string
       }
     }
 
-    if ($tokenData && !empty($tokenData['id_token']) && is_string($tokenData['id_token'])) {
-      $parts = explode('.', $tokenData['id_token']);
-      if (count($parts) >= 2) {
-        $payload = $parts[1];
-        $payload .= str_repeat('=', (4 - strlen($payload) % 4) % 4);
-        $decoded = base64_decode(strtr($payload, '-_', '+/'), true);
-        $claims = is_string($decoded) ? json_decode($decoded, true) : null;
-        if (is_array($claims)) {
-          foreach (['email', 'preferred_username', 'upn', 'unique_name'] as $key) {
-            if (!empty($claims[$key])) {
-              $candidates[] = (string)$claims[$key];
-            }
-          }
+    $claims = decode_jwt_claims(is_array($tokenData) ? (string)($tokenData['id_token'] ?? '') : null);
+    if (is_array($claims)) {
+      foreach (['email', 'preferred_username', 'upn', 'unique_name'] as $key) {
+        if (!empty($claims[$key])) {
+          $candidates[] = (string)$claims[$key];
         }
       }
     }
@@ -207,6 +288,35 @@ function microsoft_authorize_url(array $config): string
 
     return '';
   }
+
+function microsoft_extract_subject(?array $profile, ?array $tokenData): string
+{
+  $candidates = [];
+  if (is_array($profile)) {
+    foreach (['sub', 'oid', 'id'] as $key) {
+      if (!empty($profile[$key])) {
+        $candidates[] = trim((string)$profile[$key]);
+      }
+    }
+  }
+
+  $claims = decode_jwt_claims(is_array($tokenData) ? (string)($tokenData['id_token'] ?? '') : null);
+  if (is_array($claims)) {
+    foreach (['sub', 'oid', 'id'] as $key) {
+      if (!empty($claims[$key])) {
+        $candidates[] = trim((string)$claims[$key]);
+      }
+    }
+  }
+
+  foreach ($candidates as $value) {
+    if ($value !== '') {
+      return $value;
+    }
+  }
+
+  return '';
+}
 
   function microsoft_provision_user_if_allowed(PDO $pdo, array $config, string $email, string $displayName): ?array
   {
@@ -289,6 +399,20 @@ function google_authorize_url(array $config): string
   ]);
 
   return 'https://accounts.google.com/o/oauth2/v2/auth?' . $query;
+}
+
+function google_extract_subject(?array $profile, ?array $tokenData): string
+{
+  if (is_array($profile) && !empty($profile['sub'])) {
+    return trim((string)$profile['sub']);
+  }
+
+  $claims = decode_jwt_claims(is_array($tokenData) ? (string)($tokenData['id_token'] ?? '') : null);
+  if (is_array($claims) && !empty($claims['sub'])) {
+    return trim((string)$claims['sub']);
+  }
+
+  return '';
 }
 
 function google_provision_user_if_allowed(PDO $pdo, array $config, string $email, string $displayName): ?array
@@ -674,18 +798,25 @@ if ($page === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
           $profile = is_string($profileResponse) ? json_decode($profileResponse, true) : null;
           $email = microsoft_extract_email(is_array($profile) ? $profile : null, is_array($tokenData) ? $tokenData : null);
           $displayName = is_array($profile) ? (string)($profile['name'] ?? '') : '';
+          $subject = microsoft_extract_subject(is_array($profile) ? $profile : null, is_array($tokenData) ? $tokenData : null);
 
           if ($email === '') {
             $error = 'Microsoft account email not available.';
             $page = 'login';
           } else {
-            $user = find_active_user_by_email($pdo, $email);
+            $user = $subject !== '' ? find_active_user_by_identity($pdo, 'microsoft', $subject) : null;
+            if (!$user) {
+              $user = find_active_user_by_email($pdo, $email);
+            }
             if (!$user) {
               $user = microsoft_provision_user_if_allowed($pdo, $config, $email, $displayName);
             }
 
             if (!$user) {
               $error = 'No local account found for this Microsoft email, and auto-provisioning is not allowed for this domain.';
+              $page = 'login';
+            } elseif ($subject !== '' && !upsert_user_identity($pdo, (int)$user['id'], 'microsoft', $subject, $email)) {
+              $error = 'This Microsoft identity is already linked to another local account.';
               $page = 'login';
             } else {
               ensure_user_profile_exists($pdo, (int)$user['id'], (string)$user['full_name']);
@@ -762,18 +893,25 @@ if ($page === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
           $profile = is_string($profileResponse) ? json_decode($profileResponse, true) : null;
           $email = microsoft_extract_email(is_array($profile) ? $profile : null, is_array($tokenData) ? $tokenData : null);
           $displayName = is_array($profile) ? (string)($profile['name'] ?? '') : '';
+          $subject = google_extract_subject(is_array($profile) ? $profile : null, is_array($tokenData) ? $tokenData : null);
 
           if ($email === '') {
             $error = 'Google account email not available.';
             $page = 'login';
           } else {
-            $user = find_active_user_by_email($pdo, $email);
+            $user = $subject !== '' ? find_active_user_by_identity($pdo, 'google', $subject) : null;
+            if (!$user) {
+              $user = find_active_user_by_email($pdo, $email);
+            }
             if (!$user) {
               $user = google_provision_user_if_allowed($pdo, $config, $email, $displayName);
             }
 
             if (!$user) {
               $error = 'No local account found for this Google email, and auto-provisioning is not allowed for this domain.';
+              $page = 'login';
+            } elseif ($subject !== '' && !upsert_user_identity($pdo, (int)$user['id'], 'google', $subject, $email)) {
+              $error = 'This Google identity is already linked to another local account.';
               $page = 'login';
             } else {
               ensure_user_profile_exists($pdo, (int)$user['id'], (string)$user['full_name']);
@@ -807,12 +945,16 @@ if ($page === 'profile_export' && $pdo) {
     $targetUserId = (int)$actor['id'];
   }
 
-  $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
+  $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, role FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
   $targetStmt->execute([$targetUserId, (int)$actor['tenant_id']]);
   $targetUser = $targetStmt->fetch();
   if (!$targetUser) {
     http_response_code(404);
     exit('Profile target user not found');
+  }
+  if (!can_access_profile_target($actor, $targetUser)) {
+    http_response_code(403);
+    exit('Forbidden');
   }
 
   $filters = normalize_profile_application_filters($_GET);
@@ -839,6 +981,85 @@ if ($page === 'profile_export' && $pdo) {
   }
   fclose($out);
   exit;
+}
+
+if ($page === 'identity_diagnostics_export' && $pdo) {
+  $actor = require_login();
+  if (!in_array((string)$actor['role'], ['admin', 'it'], true)) {
+    http_response_code(403);
+    exit('Forbidden');
+  }
+
+  $stmt = $pdo->prepare(
+    'SELECT u.id, u.full_name, u.email, u.role, t.code AS tenant_code, up.auth_provider_id,
+            CASE
+              WHEN t.code LIKE "TKIFGO%" THEN "google"
+              WHEN t.code LIKE "TKIFMS%" THEN "microsoft"
+              ELSE ""
+            END AS inferred_provider
+     FROM users u
+     INNER JOIN tenants t ON t.id = u.tenant_id
+     INNER JOIN user_profiles up ON up.user_id = u.id
+     LEFT JOIN user_identities i ON i.user_id = u.id
+     WHERE u.tenant_id = ?
+       AND TRIM(COALESCE(up.auth_provider_id, "")) <> ""
+       AND i.id IS NULL
+     ORDER BY u.id DESC'
+  );
+  $stmt->execute([(int)$actor['tenant_id']]);
+  $rows = $stmt->fetchAll();
+
+  $filename = 'identity-backfill-candidates-tenant-' . (string)(int)$actor['tenant_id'] . '.csv';
+  header('Content-Type: text/csv; charset=UTF-8');
+  header('Content-Disposition: attachment; filename="' . $filename . '"');
+
+  $out = fopen('php://output', 'wb');
+  if ($out === false) {
+    http_response_code(500);
+    exit('Unable to export CSV');
+  }
+
+  fputcsv($out, ['user_id', 'full_name', 'email', 'role', 'tenant_code', 'inferred_provider', 'auth_provider_id'], ',', '"', '\\');
+  foreach ($rows as $row) {
+    fputcsv($out, [
+      (string)(int)$row['id'],
+      (string)$row['full_name'],
+      (string)$row['email'],
+      (string)$row['role'],
+      (string)$row['tenant_code'],
+      (string)$row['inferred_provider'],
+      (string)$row['auth_provider_id'],
+    ], ',', '"', '\\');
+  }
+
+  fclose($out);
+  exit;
+}
+
+if ($page === 'identity_diagnostics' && $pdo) {
+  $actor = require_login();
+  if (!in_array((string)$actor['role'], ['admin', 'it'], true)) {
+    http_response_code(403);
+    exit('Forbidden');
+  }
+}
+
+if ($page === 'profile' && $pdo) {
+  $actor = require_login();
+  $targetUserId = (int)($_GET['user_id'] ?? $actor['id']);
+  if ($targetUserId !== (int)$actor['id']) {
+    $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, is_active FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
+    $targetStmt->execute([$targetUserId, (int)$actor['tenant_id']]);
+    $targetUser = $targetStmt->fetch();
+    if (!$targetUser) {
+      http_response_code(404);
+      exit('Profile target user not found');
+    }
+    if (!can_access_profile_target($actor, $targetUser)) {
+      http_response_code(403);
+      exit('Forbidden');
+    }
+  }
 }
 
 if ($page === 'apply' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
@@ -1176,6 +1397,9 @@ $user = current_user();
         <?php if ($user): ?>
           <a href="/?page=dashboard">Dashboard</a>
           <a href="/?page=profile">Profile</a>
+          <?php if (in_array((string)$user['role'], ['admin', 'it'], true)): ?>
+            <a href="/?page=identity_diagnostics">Identity Diagnostics</a>
+          <?php endif; ?>
           <a href="/?page=logout">Logout</a>
         <?php else: ?>
           <a href="/?page=login">Login</a>
@@ -1255,6 +1479,9 @@ $user = current_user();
 
     <?php elseif ($page === 'dashboard' && $user): ?>
       <?php require __DIR__ . '/views/dashboard.php'; ?>
+
+    <?php elseif ($page === 'identity_diagnostics' && $user && $pdo): ?>
+      <?php require __DIR__ . '/views/identity_diagnostics.php'; ?>
 
     <?php else: ?>
       <h2>Not found</h2>

@@ -1,5 +1,5 @@
 <?php
-$isManager = can_manage_profiles($user);
+$canManageAny = can_manage_profiles($user);
 $canViewProfiles = can_view_profiles($user);
 $targetUserId = (int)($_GET['user_id'] ?? $user['id']);
 if (!$canViewProfiles) {
@@ -19,7 +19,9 @@ else:
   $profileData = get_user_profile($pdo, (int)$targetUser['id']) ?: [];
   $profileComplete = is_profile_complete($targetUser, $profileData);
   $missingFields = profile_missing_required_fields($targetUser, $profileData);
-  $canEditCurrentProfile = $isManager || ((int)$targetUser['id'] === (int)$user['id']);
+  $canControlTarget = can_control_role($user, (string)$targetUser['role']);
+  $canEditCurrentProfile = $canControlTarget || ((int)$targetUser['id'] === (int)$user['id']);
+  $assignableRoles = assignable_roles_for_actor($user);
 ?>
   <h2>Profile</h2>
   <p>Register ID: <strong><?= (int)$targetUser['id'] ?></strong> | Role: <strong><?= h($targetUser['role']) ?></strong> | Status: <strong><?= $targetUser['is_active'] ? 'Active' : 'Inactive' ?></strong></p>
@@ -33,7 +35,9 @@ else:
     <?php
       $usersStmt = $pdo->prepare('SELECT id, full_name, email, role, is_active FROM users WHERE tenant_id = ? ORDER BY id DESC LIMIT 100');
       $usersStmt->execute([$user['tenant_id']]);
-      $manageUsers = $usersStmt->fetchAll();
+      $manageUsers = array_values(array_filter($usersStmt->fetchAll(), static function (array $mu) use ($user): bool {
+        return can_access_profile_target($user, $mu);
+      }));
     ?>
     <div class="card" style="margin-bottom: 14px;">
       <h3>Profile Browser</h3>
@@ -146,22 +150,25 @@ else:
     <div class="grid">
       <div class="card">
         <h3>System & Identity</h3>
-        <label>Primary Email <?= lock_badge_html(!$isManager) ?></label>
-        <input name="primary_email" value="<?= h((string)$targetUser['email']) ?>" <?= $isManager ? '' : 'readonly' ?>>
+        <label>Primary Email <?= lock_badge_html(!$canControlTarget) ?></label>
+        <input name="primary_email" value="<?= h((string)$targetUser['email']) ?>" <?= $canControlTarget ? '' : 'readonly' ?>>
 
-        <label>Authentication Provider ID <?= lock_badge_html(!$isManager) ?></label>
-        <input name="auth_provider_id" value="<?= h((string)($profileData['auth_provider_id'] ?? '')) ?>" <?= $isManager ? '' : 'readonly' ?>>
+        <label>Authentication Provider ID <?= lock_badge_html(!$canControlTarget) ?></label>
+        <input name="auth_provider_id" value="<?= h((string)($profileData['auth_provider_id'] ?? '')) ?>" <?= $canControlTarget ? '' : 'readonly' ?>>
 
-        <label>User Type <?= lock_badge_html(!$isManager) ?></label>
-        <select name="user_type" <?= $isManager ? '' : 'disabled' ?> required>
-          <option value="student" <?= ((string)$targetUser['role'] === 'student') ? 'selected' : '' ?>>Student</option>
-          <option value="admin" <?= ((string)$targetUser['role'] === 'admin') ? 'selected' : '' ?>>Admin</option>
-          <option value="manager" <?= ((string)$targetUser['role'] === 'manager') ? 'selected' : '' ?>>Management</option>
-          <option value="it" <?= ((string)$targetUser['role'] === 'it') ? 'selected' : '' ?>>IT</option>
+        <label>User Type <?= lock_badge_html(!$canControlTarget) ?></label>
+        <select name="user_type" <?= $canControlTarget ? '' : 'disabled' ?> required>
+            <?php if ($canControlTarget): ?>
+              <?php foreach ($assignableRoles as $role): ?>
+                <option value="<?= h($role) ?>" <?= ((string)$targetUser['role'] === $role) ? 'selected' : '' ?>><?= h($role === 'manager' ? 'Management' : ucfirst($role)) ?></option>
+              <?php endforeach; ?>
+            <?php else: ?>
+              <option value="<?= h((string)$targetUser['role']) ?>" selected><?= h((string)$targetUser['role'] === 'manager' ? 'Management' : ucfirst((string)$targetUser['role'])) ?></option>
+            <?php endif; ?>
         </select>
 
-        <label>Profile Status <?= lock_badge_html(!$isManager) ?></label>
-        <select name="profile_status" <?= $isManager ? '' : 'disabled' ?>>
+        <label>Profile Status <?= lock_badge_html(!$canControlTarget) ?></label>
+        <select name="profile_status" <?= $canControlTarget ? '' : 'disabled' ?>>
           <option value="active" <?= ((int)$targetUser['is_active'] === 1) ? 'selected' : '' ?>>Active</option>
           <option value="inactive" <?= ((int)$targetUser['is_active'] === 0) ? 'selected' : '' ?>>Inactive</option>
         </select>
@@ -169,20 +176,20 @@ else:
 
       <div class="card">
         <h3>Names</h3>
-        <label>First Name <?= lock_badge_html(!$isManager) ?></label>
-        <input name="first_name" value="<?= h((string)($profileData['first_name'] ?? '')) ?>" <?= $isManager ? '' : 'readonly' ?>>
-        <label>Middle Name <?= lock_badge_html(!$isManager) ?></label>
-        <input name="middle_name" value="<?= h((string)($profileData['middle_name'] ?? '')) ?>" <?= $isManager ? '' : 'readonly' ?>>
-        <label>Last Name <?= lock_badge_html(!$isManager) ?></label>
-        <input name="last_name" value="<?= h((string)($profileData['last_name'] ?? '')) ?>" <?= $isManager ? '' : 'readonly' ?>>
+        <label>First Name <?= lock_badge_html(!$canControlTarget) ?></label>
+        <input name="first_name" value="<?= h((string)($profileData['first_name'] ?? '')) ?>" <?= $canControlTarget ? '' : 'readonly' ?>>
+        <label>Middle Name <?= lock_badge_html(!$canControlTarget) ?></label>
+        <input name="middle_name" value="<?= h((string)($profileData['middle_name'] ?? '')) ?>" <?= $canControlTarget ? '' : 'readonly' ?>>
+        <label>Last Name <?= lock_badge_html(!$canControlTarget) ?></label>
+        <input name="last_name" value="<?= h((string)($profileData['last_name'] ?? '')) ?>" <?= $canControlTarget ? '' : 'readonly' ?>>
       </div>
 
       <div class="card">
         <h3>Personal Information</h3>
-        <label>Date of Birth <?= lock_badge_html(!$isManager) ?></label>
-        <input type="date" name="date_of_birth" value="<?= h((string)($profileData['date_of_birth'] ?? '')) ?>" <?= $isManager ? '' : 'readonly' ?>>
-        <label>Nationality <?= lock_badge_html(!$isManager) ?></label>
-        <input name="nationality" value="<?= h((string)($profileData['nationality'] ?? '')) ?>" <?= $isManager ? '' : 'readonly' ?>>
+        <label>Date of Birth <?= lock_badge_html(!$canControlTarget) ?></label>
+        <input type="date" name="date_of_birth" value="<?= h((string)($profileData['date_of_birth'] ?? '')) ?>" <?= $canControlTarget ? '' : 'readonly' ?>>
+        <label>Nationality <?= lock_badge_html(!$canControlTarget) ?></label>
+        <input name="nationality" value="<?= h((string)($profileData['nationality'] ?? '')) ?>" <?= $canControlTarget ? '' : 'readonly' ?>>
       </div>
 
       <div class="card">

@@ -1,0 +1,129 @@
+name: Acceptance Smoke
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: tkif_scholarship
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_mysql, curl, mbstring, json
+          coverage: none
+
+      - name: Prepare CI .env
+        run: |
+          cat > .env <<'EOF'
+          APP_NAME=TKIF Scholarship MVP
+          APP_ENV=ci
+          APP_URL=http://127.0.0.1:8080
+
+          DB_HOST=127.0.0.1
+          DB_PORT=3306
+          DB_NAME=tkif_scholarship
+          DB_USER=root
+          DB_PASS=root
+
+          SESSION_NAME=tkif_session
+
+          N8N_BASE_URL=http://127.0.0.1:5678
+          N8N_API_KEY=replace_me
+          N8N_WEBHOOK_SUBMIT=/webhook/scholarship-submit
+
+          SMTP_ENABLED=false
+          SMTP_HOST=
+          SMTP_PORT=
+          SMTP_ENCRYPTION=ssl
+          SMTP_USERNAME=
+          SMTP_PASSWORD=
+          SMTP_FROM_EMAIL=
+          SMTP_FROM_NAME=
+          SMTP_TIMEOUT=10
+
+          OTP_ENABLED=true
+          OTP_LENGTH=6
+          OTP_TTL_MINUTES=10
+
+          MICROSOFT_CLIENT_ID=
+          MICROSOFT_TENANT_ID=
+          MICROSOFT_REDIRECT_URI=http://127.0.0.1:8080/?page=auth_microsoft_callback
+          MICROSOFT_CLIENT_SECRET=
+          MICROSOFT_AUTO_PROVISION=false
+          MICROSOFT_ALLOWED_DOMAIN=
+          MICROSOFT_DEFAULT_ROLE=student
+          MICROSOFT_DEFAULT_TENANT_CODE=TKIFMS001
+
+          GOOGLE_CLIENT_ID=
+          GOOGLE_CLIENT_SECRET=
+          GOOGLE_REDIRECT_URI=http://127.0.0.1:8080/?page=auth_google_callback
+          GOOGLE_AUTO_PROVISION=false
+          GOOGLE_ALLOWED_DOMAIN=
+          GOOGLE_DEFAULT_ROLE=student
+          GOOGLE_DEFAULT_TENANT_CODE=TKIFGO001
+          EOF
+
+      - name: Wait for MySQL
+        run: |
+          for i in {1..30}; do
+            mysql -h127.0.0.1 -uroot -proot -e 'SELECT 1' && exit 0
+            sleep 2
+          done
+          echo "MySQL did not become ready in time"
+          exit 1
+
+      - name: Setup database
+        run: |
+          mysql -h127.0.0.1 -uroot -proot < sql/schema.sql
+          mysql -h127.0.0.1 -uroot -proot < sql/seed.sql
+          mysql -h127.0.0.1 -uroot -proot < sql/migrations/20260603_add_blacklist_entries.sql
+          mysql -h127.0.0.1 -uroot -proot < sql/migrations/20260603_make_blacklist_reason_nullable.sql
+          mysql -h127.0.0.1 -uroot -proot < sql/migrations/20260603_add_otp_codes.sql
+          mysql -h127.0.0.1 -uroot -proot < sql/migrations/20260603_add_provider_tenants.sql
+          mysql -h127.0.0.1 -uroot -proot < sql/migrations/20260603_add_user_profiles.sql
+          mysql -h127.0.0.1 -uroot -proot < sql/migrations/20260603_add_application_filter_indexes.sql
+
+      - name: Start PHP server
+        run: |
+          php -S 127.0.0.1:8080 -t public > /tmp/php-server.log 2>&1 &
+          echo $! > /tmp/php-server.pid
+
+      - name: Wait for app
+        run: |
+          for i in {1..30}; do
+            curl -fsS http://127.0.0.1:8080/?page=login > /dev/null && exit 0
+            sleep 1
+          done
+          echo "App did not become ready in time"
+          exit 1
+
+      - name: Run acceptance smoke
+        run: |
+          bash scripts/acceptance_smoke.sh http://127.0.0.1:8080
+
+      - name: Dump PHP server log on failure
+        if: failure()
+        run: |
+          echo '--- PHP SERVER LOG ---'
+          cat /tmp/php-server.log || true

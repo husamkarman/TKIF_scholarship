@@ -2,6 +2,9 @@
 
 ## Package Locally
 1. Ensure `.env` is configured for server DB and URLs.
+2. Complete security rotation checklist before packaging:
+   - `SECURITY_ROTATION.md`
+   - `bash scripts/check_env_security.sh .env`
 2. Zip these paths:
    - `public/`
    - `app/`

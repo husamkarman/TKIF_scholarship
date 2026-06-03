@@ -18,8 +18,22 @@ CREATE TABLE IF NOT EXISTS users (
   role ENUM('student','admin','manager','it') NOT NULL,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_users_email_global (email),
   UNIQUE KEY uq_tenant_email (tenant_id, email),
   CONSTRAINT fk_users_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+);
+
+CREATE TABLE IF NOT EXISTS user_identities (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  provider ENUM('google','microsoft') NOT NULL,
+  provider_user_id VARCHAR(190) NOT NULL,
+  provider_email VARCHAR(190) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_identity_provider_subject (provider, provider_user_id),
+  UNIQUE KEY uq_identity_user_provider (user_id, provider),
+  CONSTRAINT fk_identity_user FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
 CREATE TABLE IF NOT EXISTS scholarships (
@@ -45,6 +59,9 @@ CREATE TABLE IF NOT EXISTS applications (
   rejection_reason VARCHAR(255) NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_app_tenant_student_id (tenant_id, student_id, id),
+  INDEX idx_app_tenant_student_status_created_sch (tenant_id, student_id, status, created_at, scholarship_id, id),
+  INDEX idx_app_tenant_student_sch_created (tenant_id, student_id, scholarship_id, created_at, id),
   CONSTRAINT fk_app_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
   CONSTRAINT fk_app_scholarship FOREIGN KEY (scholarship_id) REFERENCES scholarships(id),
   CONSTRAINT fk_app_student FOREIGN KEY (student_id) REFERENCES users(id)

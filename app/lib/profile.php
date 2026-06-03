@@ -22,6 +22,13 @@ const PROFILE_REQUIRED_PROFILE_FIELDS = [
   'address_text',
 ];
 
+const ROLE_HIERARCHY = [
+  'student' => 1,
+  'manager' => 2,
+  'admin' => 3,
+  'it' => 4,
+];
+
 function ensure_user_profile_exists(PDO $pdo, int $userId, string $fallbackFullName = ''): void
 {
   $check = $pdo->prepare('SELECT user_id FROM user_profiles WHERE user_id = ? LIMIT 1');
@@ -85,12 +92,48 @@ function is_profile_complete(array $user, array $profile): bool
 
 function can_manage_profiles(array $user): bool
 {
-  return in_array((string)$user['role'], ['admin', 'it'], true);
+  return in_array((string)$user['role'], ['manager', 'admin', 'it'], true);
 }
 
 function can_view_profiles(array $user): bool
 {
   return in_array((string)$user['role'], ['admin', 'manager', 'it'], true);
+}
+
+function role_rank(string $role): int
+{
+  return ROLE_HIERARCHY[$role] ?? 0;
+}
+
+function assignable_roles_for_actor(array $actor): array
+{
+  $role = (string)($actor['role'] ?? '');
+  if ($role === 'it') {
+    return ['admin', 'manager', 'student'];
+  }
+  if ($role === 'admin') {
+    return ['manager', 'student'];
+  }
+  if ($role === 'manager') {
+    return ['student'];
+  }
+  return [];
+}
+
+function can_control_role(array $actor, string $targetRole): bool
+{
+  return in_array($targetRole, assignable_roles_for_actor($actor), true);
+}
+
+function can_access_profile_target(array $actor, array $targetUser): bool
+{
+  $actorId = (int)($actor['id'] ?? 0);
+  $targetId = (int)($targetUser['id'] ?? 0);
+  if ($actorId > 0 && $actorId === $targetId) {
+    return true;
+  }
+
+  return can_control_role($actor, (string)($targetUser['role'] ?? ''));
 }
 
 function normalize_profile_application_filters(array $query): array
@@ -139,13 +182,13 @@ function fetch_profile_student_applications(PDO $pdo, int $tenantId, int $studen
   }
 
   if ((string)$filters['from'] !== '') {
-    $query .= ' AND DATE(a.created_at) >= ?';
-    $params[] = (string)$filters['from'];
+    $query .= ' AND a.created_at >= ?';
+    $params[] = (string)$filters['from'] . ' 00:00:00';
   }
 
   if ((string)$filters['to'] !== '') {
-    $query .= ' AND DATE(a.created_at) <= ?';
-    $params[] = (string)$filters['to'];
+    $query .= ' AND a.created_at < DATE_ADD(?, INTERVAL 1 DAY)';
+    $params[] = (string)$filters['to'] . ' 00:00:00';
   }
 
   if ((int)$filters['scholarship_id'] > 0) {
