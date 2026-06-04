@@ -1671,6 +1671,12 @@ $error = '';
 $verifyChallengeMeta = null;
 $adminSupportRows = [];
 $adminSupportTargetEmail = '';
+$blacklistPreview = null;
+$blacklistForm = [
+  'register_id' => '',
+  'email' => '',
+  'reason' => '',
+];
 $formBuilderSelectedTemplate = 'basic_application';
 $formBuilderDraftSchema = form_builder_starter_template_json('basic_application');
 $formBuilderTemplateMeta = form_builder_starter_template('basic_application');
@@ -1691,6 +1697,30 @@ $registerOld = [
 if ($page === 'notification_worker_run') {
   if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     json_response(405, ['ok' => false, 'error' => 'method_not_allowed']);
+
+function blacklist_find_user_by_id(PDO $pdo, int $tenantId, int $registerId): ?array
+{
+  if ($registerId <= 0) {
+    return null;
+  }
+
+  $stmt = $pdo->prepare('SELECT id, full_name, email, role, created_at FROM users WHERE tenant_id = ? AND id = ? LIMIT 1');
+  $stmt->execute([$tenantId, $registerId]);
+  $row = $stmt->fetch();
+  return $row ?: null;
+}
+
+function blacklist_find_user_by_email(PDO $pdo, int $tenantId, string $emailNorm): ?array
+{
+  if ($emailNorm === '') {
+    return null;
+  }
+
+  $stmt = $pdo->prepare('SELECT id, full_name, email, role, created_at FROM users WHERE tenant_id = ? AND LOWER(TRIM(email)) = ? LIMIT 1');
+  $stmt->execute([$tenantId, $emailNorm]);
+  $row = $stmt->fetch();
+  return $row ?: null;
+}
   }
 
   if (!$pdo) {
@@ -2990,25 +3020,100 @@ if ($page === 'blacklist_add' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) 
   $email = trim((string)($_POST['email'] ?? ''));
   $emailNorm = $email !== '' ? normalize_email($email) : null;
   $reason = trim((string)($_POST['reason'] ?? ''));
+  $blacklistForm = [
+    'register_id' => $registerId > 0 ? (string)$registerId : '',
+    'email' => $email,
+    'reason' => $reason,
+  ];
 
   if ($registerId <= 0 && $emailNorm === null) {
     $error = 'Provide register_id or email.';
-  } else {
+  }
+
+  $userById = $registerId > 0 ? blacklist_find_user_by_id($pdo, (int)$user['tenant_id'], $registerId) : null;
+  if ($error === '' && $registerId > 0 && $userById === null) {
+    $error = 'Registration ID was not found. For non-registered persons, use email only.';
+  }
+
+  if ($error === '' && $registerId > 0 && $emailNorm !== null && $userById !== null && normalize_email((string)$userById['email']) !== $emailNorm) {
+    $error = 'Registration ID and email point to different users. Fix the input and try again.';
+  }
+
+  if ($error === '') {
+    $registerIdForInsert = $registerId > 0 ? $registerId : null;
     $insert = $pdo->prepare('INSERT INTO blacklist_entries (tenant_id, register_id, email_original, email_normalized, reason, created_by) VALUES (?, ?, ?, ?, ?, ?)');
     $insert->execute([
       $user['tenant_id'],
-      $registerId > 0 ? $registerId : null,
+      $registerIdForInsert,
       $email !== '' ? $email : null,
       $emailNorm,
       $reason !== '' ? $reason : null,
       $user['id'],
     ]);
 
-    $matchedUserIds = collect_blacklisted_user_ids($pdo, (int)$user['tenant_id'], $registerId > 0 ? $registerId : null, $emailNorm);
+    $matchedUserIds = collect_blacklisted_user_ids($pdo, (int)$user['tenant_id'], $registerIdForInsert, $emailNorm);
     $rejectedCount = reject_inflight_applications($pdo, (int)$user['tenant_id'], $matchedUserIds, (int)$user['id'], 'Blacklisted: ' . blacklist_reason_text($reason));
     $message = 'Blacklist entry added. Auto-rejected in-flight applications: ' . (string)$rejectedCount;
+    $blacklistForm = ['register_id' => '', 'email' => '', 'reason' => ''];
+    $page = 'dashboard';
+  } else {
     $page = 'dashboard';
   }
+}
+
+if ($page === 'blacklist_preview' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
+  require_csrf();
+  $user = require_login();
+  if (!in_array($user['role'], ['admin', 'it'], true)) {
+    http_response_code(403);
+    exit('Forbidden');
+  }
+
+  $registerId = (int)($_POST['register_id'] ?? 0);
+  $email = trim((string)($_POST['email'] ?? ''));
+  $emailNorm = $email !== '' ? normalize_email($email) : null;
+  $reason = trim((string)($_POST['reason'] ?? ''));
+  $blacklistForm = [
+    'register_id' => $registerId > 0 ? (string)$registerId : '',
+    'email' => $email,
+    'reason' => $reason,
+  ];
+
+  if ($registerId <= 0 && $emailNorm === null) {
+    $error = 'Provide register_id or email for preview.';
+  } else {
+    $userById = $registerId > 0 ? blacklist_find_user_by_id($pdo, (int)$user['tenant_id'], $registerId) : null;
+    $userByEmail = $emailNorm !== null ? blacklist_find_user_by_email($pdo, (int)$user['tenant_id'], $emailNorm) : null;
+
+    if ($registerId > 0 && $userById === null) {
+      $blacklistPreview = [
+        'mode' => 'not_found_id',
+        'register_id' => $registerId,
+        'email' => $email,
+      ];
+    } elseif ($registerId > 0 && $emailNorm !== null && $userById !== null && normalize_email((string)$userById['email']) !== $emailNorm) {
+      $blacklistPreview = [
+        'mode' => 'mismatch',
+        'register_id' => $registerId,
+        'email' => $email,
+        'user_by_id' => $userById,
+        'user_by_email' => $userByEmail,
+      ];
+    } elseif ($userById !== null || $userByEmail !== null) {
+      $blacklistPreview = [
+        'mode' => 'found',
+        'user' => $userById ?? $userByEmail,
+        'matched_by' => $userById !== null ? 'register_id' : 'email',
+      ];
+    } else {
+      $blacklistPreview = [
+        'mode' => 'email_only',
+        'email' => $email,
+      ];
+    }
+  }
+
+  $page = 'dashboard';
 }
 
 if ($page === 'blacklist_import' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {

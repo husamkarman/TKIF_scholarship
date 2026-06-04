@@ -217,12 +217,16 @@ Apply in this order:
 1. Matching keys:
    - `register_id` (mapped to user registration sequence id)
    - normalized email (trim + case-insensitive)
-2. Blacklist effect:
+2. Use rules:
+   - Registered person: use `register_id` or email.
+   - Non-registered person: use email only.
+   - Click `Preview Person` before adding the blacklist row.
+3. Blacklist effect:
    - New applications are auto-rejected.
    - Existing `submitted` and `in_review` applications are auto-rejected.
-3. Manual add:
+4. Manual add:
    - Admin/IT can add blacklist rows from dashboard quickly.
-4. Import file:
+5. Import file:
    - Supported: `.csv`, `.xlsx`
    - Supported headers: `register_id,email,reason`
    - `register_id` and/or `email` must exist per row.

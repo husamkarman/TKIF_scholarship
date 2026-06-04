@@ -157,18 +157,47 @@
     <?php if (in_array($user['role'], ['admin', 'it'], true)): ?>
       <div class="card" style="margin-bottom: 14px;">
         <h3>Blacklist Management</h3>
-        <p>Unique matching keys: register_id and normalized email.</p>
+        <p>For already-registered users, use Registration ID or email. For non-registered persons, use email only. Use Preview Person before adding the blacklist row.</p>
         <form method="post" action="/?page=blacklist_add">
           <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
-          <label>register_id (optional if email is provided)</label>
-          <input type="number" name="register_id" min="1" placeholder="e.g. 125">
-          <label>Email (optional if register_id is provided)</label>
-          <input type="email" name="email" placeholder="student@example.com">
+          <label>Registration ID (use for registered users, optional if email is provided)</label>
+          <input type="number" name="register_id" min="1" placeholder="e.g. 125" value="<?= h((string)($blacklistForm['register_id'] ?? '')) ?>">
+          <label>Email (required for non-registered persons)</label>
+          <input type="email" name="email" placeholder="student@example.com" value="<?= h((string)($blacklistForm['email'] ?? '')) ?>">
           <label>Reason (optional)</label>
-          <input name="reason" placeholder="Example: Fraud attempt / Duplicate identity">
+          <input name="reason" placeholder="Example: Fraud attempt / Duplicate identity" value="<?= h((string)($blacklistForm['reason'] ?? '')) ?>">
           <br>
+          <button class="btn" type="submit" formaction="/?page=blacklist_preview">Preview Person</button>
           <button class="btn" type="submit">Add Blacklist Entry</button>
         </form>
+
+        <?php if (is_array($blacklistPreview ?? null)): ?>
+          <div class="card" style="margin-top: 12px;">
+            <h4>Preview Result</h4>
+            <?php if (($blacklistPreview['mode'] ?? '') === 'found' && is_array($blacklistPreview['user'] ?? null)): ?>
+              <?php $previewUser = $blacklistPreview['user']; ?>
+              <p>Matched registered user by <?= h((string)($blacklistPreview['matched_by'] ?? 'input')) ?>. Review this person before blacklisting.</p>
+              <table class="table">
+                <thead><tr><th>register_id</th><th>Name</th><th>Email</th><th>Role</th><th>Created</th></tr></thead>
+                <tbody>
+                  <tr>
+                    <td><?= (int)($previewUser['id'] ?? 0) ?></td>
+                    <td><?= h((string)($previewUser['full_name'] ?? '')) ?></td>
+                    <td><?= h((string)($previewUser['email'] ?? '')) ?></td>
+                    <td><?= h((string)($previewUser['role'] ?? '')) ?></td>
+                    <td><?= h((string)($previewUser['created_at'] ?? '')) ?></td>
+                  </tr>
+                </tbody>
+              </table>
+            <?php elseif (($blacklistPreview['mode'] ?? '') === 'not_found_id'): ?>
+              <p>No registered user was found for Registration ID <?= h((string)($blacklistPreview['register_id'] ?? '')) ?>. If this person is not registered, blacklist by email only.</p>
+            <?php elseif (($blacklistPreview['mode'] ?? '') === 'mismatch'): ?>
+              <p>Registration ID and email point to different users. Fix input before blacklisting.</p>
+            <?php elseif (($blacklistPreview['mode'] ?? '') === 'email_only'): ?>
+              <p>No registered user matched this email. You can still blacklist this email for future registrations.</p>
+            <?php endif; ?>
+          </div>
+        <?php endif; ?>
 
         <h4 style="margin-top:14px;">Import Excel/CSV</h4>
         <p>Headers supported: register_id,email,reason (reason optional)</p>
@@ -232,7 +261,7 @@
       $oldUsersStmt->execute([$user['tenant_id']]);
       $oldUsers = $oldUsersStmt->fetchAll();
 
-      $blacklistStmt = $pdo->prepare('SELECT register_id, email_original, reason, created_at FROM blacklist_entries WHERE tenant_id = ? ORDER BY id DESC LIMIT 50');
+      $blacklistStmt = $pdo->prepare('SELECT register_id, email_original, reason, created_at FROM blacklist_entries WHERE tenant_id = ? ORDER BY id ASC LIMIT 50');
       $blacklistStmt->execute([$user['tenant_id']]);
       $blacklistRows = $blacklistStmt->fetchAll();
 

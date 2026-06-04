@@ -48,8 +48,13 @@ function ensure_user_profile_exists(PDO $pdo, int $userId, string $fallbackFullN
     }
   }
 
-  $ins = $pdo->prepare('INSERT INTO user_profiles (user_id, first_name, middle_name, last_name) VALUES (?, ?, ?, ?)');
-  $ins->execute([$userId, $firstName, '', $lastName]);
+  $defaultPhoneCode = '';
+  if (function_exists('phone_country_codes_ready') && function_exists('phone_default_country_code') && phone_country_codes_ready($pdo)) {
+    $defaultPhoneCode = phone_default_country_code($pdo);
+  }
+
+  $ins = $pdo->prepare('INSERT INTO user_profiles (user_id, first_name, middle_name, last_name, phone_country_code) VALUES (?, ?, ?, ?, ?)');
+  $ins->execute([$userId, $firstName, '', $lastName, $defaultPhoneCode !== '' ? $defaultPhoneCode : null]);
 }
 
 function get_user_profile(PDO $pdo, int $userId): ?array
@@ -57,6 +62,16 @@ function get_user_profile(PDO $pdo, int $userId): ?array
   $stmt = $pdo->prepare('SELECT * FROM user_profiles WHERE user_id = ? LIMIT 1');
   $stmt->execute([$userId]);
   $profile = $stmt->fetch();
+
+  if ($profile && trim((string)($profile['phone_country_code'] ?? '')) === '' && function_exists('phone_country_codes_ready') && function_exists('phone_default_country_code') && phone_country_codes_ready($pdo)) {
+    $defaultPhoneCode = phone_default_country_code($pdo);
+    if ($defaultPhoneCode !== '') {
+      $update = $pdo->prepare('UPDATE user_profiles SET phone_country_code = ? WHERE user_id = ?');
+      $update->execute([$defaultPhoneCode, $userId]);
+      $profile['phone_country_code'] = $defaultPhoneCode;
+    }
+  }
+
   return $profile ?: null;
 }
 
@@ -136,7 +151,7 @@ function can_access_profile_target(array $actor, array $targetUser): bool
   return can_control_role($actor, (string)($targetUser['role'] ?? ''));
 }
 
-function normalize_profile_application_filters(array $query): array
+function normalize_application_filters(array $query): array
 {
   $status = strtolower(trim((string)($query['app_status'] ?? '')));
   if (!in_array($status, ['', 'submitted', 'in_review', 'approved', 'rejected'], true)) {
@@ -159,6 +174,11 @@ function normalize_profile_application_filters(array $query): array
     'to' => $to,
     'scholarship_id' => max(0, (int)($query['app_scholarship_id'] ?? 0)),
   ];
+}
+
+function normalize_profile_application_filters(array $query): array
+{
+  return normalize_application_filters($query);
 }
 
 function fetch_tenant_scholarship_options(PDO $pdo, int $tenantId): array

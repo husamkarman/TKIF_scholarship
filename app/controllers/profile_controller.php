@@ -99,6 +99,13 @@ function handle_profile_save_request(PDO $pdo, array $actor, array $post): array
     'address_text' => trim((string)($post['address_text'] ?? '')),
   ];
 
+  if ($profileFields['phone_country_code'] === '') {
+    $profileFields['phone_country_code'] = trim((string)($currentProfile['phone_country_code'] ?? ''));
+  }
+  if ($profileFields['phone_number'] === '') {
+    $profileFields['phone_number'] = trim((string)($currentProfile['phone_number'] ?? ''));
+  }
+
   if (phone_country_codes_ready($pdo)) {
     $phoneValidation = phone_validate_input(
       $pdo,

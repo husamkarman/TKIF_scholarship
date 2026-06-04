@@ -65,6 +65,12 @@
    - unlock user
    - inspect verification attempts
 
+## Blacklist Operations
+1. For registered users, add blacklist rows using `register_id` or email.
+2. For non-registered persons, use email only.
+3. Use the Dashboard `Preview Person` button before blacklisting so IT/Admin can verify the person first.
+4. Import remains supported for `.csv` and `.xlsx` using headers `register_id,email,reason`.
+
 ## Post-Upload Smoke Tests
 1. Login with each role and verify dashboard opens.
 2. Register a new guest account and verify it lands on `/?page=verify_email`.
