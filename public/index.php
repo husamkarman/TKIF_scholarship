@@ -982,6 +982,13 @@ function normalize_form_schema(mixed $schema): array
       'required' => $required,
     ];
 
+    if (in_array($type, ['text', 'textarea'], true)) {
+      $textRule = normalize_text_rule((string)($field['text_rule'] ?? ''));
+      if ($textRule !== '') {
+        $normalizedField['text_rule'] = $textRule;
+      }
+    }
+
     if (in_array($type, ['select', 'radio', 'checkbox'], true)) {
       $rawOptions = $field['options'] ?? [];
       $options = [];
@@ -1030,6 +1037,63 @@ function normalize_form_schema(mixed $schema): array
   }
 
   return $normalized;
+}
+
+function normalize_text_rule(string $textRule): string
+{
+  $rule = strtolower(trim($textRule));
+  if ($rule === 'latin_arabic') {
+    $rule = 'english_or_arabic';
+  }
+
+  if ($rule === '') {
+    return '';
+  }
+
+  $allowed = ['none', 'arabic_only', 'english_only', 'turkish_latin_only', 'english_or_arabic'];
+  return in_array($rule, $allowed, true) ? $rule : '';
+}
+
+function text_matches_rule(string $value, string $textRule): bool
+{
+  $rule = normalize_text_rule($textRule);
+  $trimmed = trim($value);
+  if ($trimmed === '' || $rule === '' || $rule === 'none') {
+    return true;
+  }
+
+  if ($rule === 'arabic_only') {
+    return (bool)preg_match("/^[\\p{Arabic}\\p{M}\\s'\\-]+$/u", $trimmed);
+  }
+  if ($rule === 'english_only') {
+    return (bool)preg_match("/^[A-Za-z\\s'\\-]+$/", $trimmed);
+  }
+  if ($rule === 'turkish_latin_only') {
+    return (bool)preg_match("/^[A-Za-zÇĞİÖŞÜçğıöşü\\s'\\-]+$/u", $trimmed);
+  }
+
+  return (bool)preg_match("/^[\\p{Latin}\\p{Arabic}\\p{M}\\s'\\-]+$/u", $trimmed);
+}
+
+function text_rule_error_message(string $textRule): string
+{
+  $rule = normalize_text_rule($textRule);
+  if ($rule === 'none' || $rule === '') {
+    return '';
+  }
+  if ($rule === 'arabic_only') {
+    return 'This field accepts Arabic letters only.';
+  }
+  if ($rule === 'english_only') {
+    return 'This field accepts English letters only.';
+  }
+  if ($rule === 'turkish_latin_only') {
+    return 'This field accepts Turkish Latin letters only.';
+  }
+  if ($rule === 'english_or_arabic') {
+    return 'This field accepts English or Arabic letters only.';
+  }
+  return 'Invalid text format.';
 }
 
 function field_is_visible(array $field, array $answers): bool
@@ -1097,16 +1161,6 @@ function field_is_visible(array $field, array $answers): bool
   }
 }
 
-function is_latin_or_arabic_text(string $value): bool
-{
-  $trimmed = trim($value);
-  if ($trimmed === '') {
-    return true;
-  }
-
-  return (bool)preg_match("/^[\\p{Latin}\\p{Arabic}\\p{M}\\s'\\-]+$/u", $trimmed);
-}
-
 function render_dynamic_field(array $field, array $old = []): void
 {
   $name = (string)$field['name'];
@@ -1123,7 +1177,17 @@ function render_dynamic_field(array $field, array $old = []): void
     $visibleIfOperator = 'equals';
     $visibleIfValue = (string)$visibleIf['equals'];
   }
-  $textRule = in_array($type, ['text', 'textarea'], true) ? 'latin_arabic' : '';
+  $textRule = '';
+  if (in_array($type, ['text', 'textarea'], true)) {
+    if (array_key_exists('text_rule', $field)) {
+      $textRule = normalize_text_rule((string)$field['text_rule']);
+    } else {
+      $textRule = 'english_or_arabic';
+    }
+    if ($textRule === '') {
+      $textRule = 'english_or_arabic';
+    }
+  }
 
   echo '<div class="dynamic-field" data-field-name="' . h($name) . '" data-field-type="' . h($type) . '" data-text-rule="' . h($textRule) . '" data-visible-if-field="' . h($visibleIfField) . '" data-visible-if-operator="' . h($visibleIfOperator) . '" data-visible-if-value="' . h($visibleIfValue) . '">';
 
@@ -2622,8 +2686,12 @@ if ($page === 'apply' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
           $value = '';
         }
       }
-      if (in_array($fieldType, ['text', 'textarea'], true) && !is_latin_or_arabic_text($value)) {
-        $error = 'Text fields accept only English/Latin or Arabic letters.';
+      $fieldTextRule = normalize_text_rule((string)($field['text_rule'] ?? 'english_or_arabic'));
+      if (in_array($fieldType, ['text', 'textarea'], true) && !text_matches_rule($value, $fieldTextRule)) {
+        $error = text_rule_error_message($fieldTextRule);
+        if ($error === '') {
+          $error = 'Invalid text format.';
+        }
         $page = 'dashboard';
         break;
       }
@@ -3389,6 +3457,51 @@ $user = current_user();
       }
     }
 
+    function isArabicOnlyText(value) {
+      const trimmed = String(value || '').trim();
+      if (!trimmed) {
+        return true;
+      }
+      try {
+        return /^[\p{Script=Arabic}\p{M}\s'\-]+$/u.test(trimmed);
+      } catch (e) {
+        return true;
+      }
+    }
+
+    function isEnglishOnlyText(value) {
+      const trimmed = String(value || '').trim();
+      if (!trimmed) {
+        return true;
+      }
+      return /^[A-Za-z\s'\-]+$/.test(trimmed);
+    }
+
+    function isTurkishLatinOnlyText(value) {
+      const trimmed = String(value || '').trim();
+      if (!trimmed) {
+        return true;
+      }
+      try {
+        return /^[A-Za-zÇĞİÖŞÜçğıöşü\s'\-]+$/u.test(trimmed);
+      } catch (e) {
+        return true;
+      }
+    }
+
+    function textRuleErrorMessage(rule) {
+      if (rule === 'arabic_only') {
+        return 'This field accepts Arabic letters only.';
+      }
+      if (rule === 'english_only') {
+        return 'This field accepts English letters only.';
+      }
+      if (rule === 'turkish_latin_only') {
+        return 'This field accepts Turkish Latin letters only.';
+      }
+      return 'This field accepts English or Arabic letters only.';
+    }
+
     applyForms.forEach(function (form) {
       const scholarshipId = form.getAttribute('data-scholarship-id') || '0';
       const draftKey = 'scholarship_form_draft_' + scholarshipId;
@@ -3417,25 +3530,38 @@ $user = current_user();
       }
 
       function validateTextRules() {
-        let isValid = true;
+        let errorMessage = '';
         form.querySelectorAll('.dynamic-field').forEach(function (wrapper) {
-          if (wrapper.style.display === 'none') {
+          if (errorMessage !== '' || wrapper.style.display === 'none') {
             return;
           }
           const textRule = (wrapper.getAttribute('data-text-rule') || '').trim();
-          if (textRule !== 'latin_arabic') {
+          if (!textRule || textRule === 'none') {
             return;
           }
           const fieldName = wrapper.getAttribute('data-field-name') || '';
           if (!fieldName) {
             return;
           }
-          const value = getFieldValue(form, fieldName);
-          if (!isLatinArabicText(Array.isArray(value) ? value.join(' ') : value)) {
-            isValid = false;
+          const rawValue = getFieldValue(form, fieldName);
+          const value = Array.isArray(rawValue) ? rawValue.join(' ') : rawValue;
+          let valid = true;
+
+          if (textRule === 'arabic_only') {
+            valid = isArabicOnlyText(value);
+          } else if (textRule === 'english_only') {
+            valid = isEnglishOnlyText(value);
+          } else if (textRule === 'turkish_latin_only') {
+            valid = isTurkishLatinOnlyText(value);
+          } else {
+            valid = isLatinArabicText(value);
+          }
+
+          if (!valid) {
+            errorMessage = textRuleErrorMessage(textRule);
           }
         });
-        return isValid;
+        return errorMessage;
       }
 
       function saveDraft() {
@@ -3474,8 +3600,9 @@ $user = current_user();
         saveDraft();
       });
       form.addEventListener('submit', function (event) {
-        if (!validateTextRules()) {
-          window.alert('Text fields accept only English/Latin or Arabic letters.');
+        const textRuleError = validateTextRules();
+        if (textRuleError) {
+          window.alert(textRuleError);
           event.preventDefault();
           return;
         }
@@ -3517,6 +3644,13 @@ $user = current_user();
         '<option value="radio">radio</option>' +
         '<option value="checkbox">checkbox</option>' +
       '</select>' +
+      '<select class="f-text-rule">' +
+        '<option value="none">No letter restriction</option>' +
+        '<option value="arabic_only">Arabic only</option>' +
+        '<option value="english_only">English only</option>' +
+        '<option value="turkish_latin_only">Turkish Latin only</option>' +
+        '<option value="english_or_arabic">English or Arabic</option>' +
+      '</select>' +
       '<input placeholder="Options (comma separated)" class="f-options" value="' + ((defaults.options || []).join(', ')) + '">' +
       '<input placeholder="Show when field (optional)" class="f-visible-if-field" value="' + ((defaults.visible_if && defaults.visible_if.field) || '') + '">' +
       '<select class="f-visible-if-operator">' +
@@ -3534,11 +3668,17 @@ $user = current_user();
     row.querySelector('.f-type').value = defaults.type || 'text';
     row.querySelector('.f-required').checked = !!defaults.required;
     row.querySelector('.f-visible-if-operator').value = (defaults.visible_if && (defaults.visible_if.operator || 'equals')) || 'equals';
+    row.querySelector('.f-text-rule').value = defaults.text_rule || 'none';
 
-    function syncOptionsVisibility() {
+    function syncFieldOptionVisibility() {
       const type = row.querySelector('.f-type').value;
       const optionsInput = row.querySelector('.f-options');
+      const textRuleSelect = row.querySelector('.f-text-rule');
       optionsInput.style.display = ['select', 'radio', 'checkbox'].includes(type) ? '' : 'none';
+      textRuleSelect.style.display = ['text', 'textarea'].includes(type) ? '' : 'none';
+      if (!['text', 'textarea'].includes(type)) {
+        textRuleSelect.value = 'none';
+      }
     }
 
     row.querySelector('.remove-field').addEventListener('click', function () {
@@ -3549,8 +3689,8 @@ $user = current_user();
       el.addEventListener('change', syncSchema);
       el.addEventListener('keyup', syncSchema);
     });
-    row.querySelector('.f-type').addEventListener('change', syncOptionsVisibility);
-    syncOptionsVisibility();
+    row.querySelector('.f-type').addEventListener('change', syncFieldOptionVisibility);
+    syncFieldOptionVisibility();
     return row;
   }
 
@@ -3569,6 +3709,7 @@ $user = current_user();
         type: field.type || 'text',
         required: !!field.required,
         options: Array.isArray(field.options) ? field.options : [],
+        text_rule: field.text_rule || '',
         visible_if: (field.visible_if && typeof field.visible_if === 'object') ? field.visible_if : null
       }));
     });
@@ -3592,8 +3733,12 @@ $user = current_user();
       const type = row.querySelector('.f-type').value;
       const optionsRaw = row.querySelector('.f-options').value;
       const required = row.querySelector('.f-required').checked;
+      const textRule = row.querySelector('.f-text-rule').value;
       if (name && label) {
         const field = { name: name, label: label, type: type, required: required };
+        if (['text', 'textarea'].includes(type) && textRule) {
+          field.text_rule = textRule;
+        }
         if (['select', 'radio', 'checkbox'].includes(type)) {
           field.options = optionsRaw.split(',').map(function (opt) {
             return opt.trim();

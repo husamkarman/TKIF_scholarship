@@ -156,16 +156,28 @@ $scholarshipStatus = (string)($formBuilderScholarshipStatus ?? 'draft');
         '<option value="radio">radio</option>' +
         '<option value="checkbox">checkbox</option>' +
       '</select>' +
+      '<select class="fb-text-rule">' +
+        '<option value="none">No letter restriction</option>' +
+        '<option value="arabic_only">Arabic only</option>' +
+        '<option value="english_only">English only</option>' +
+        '<option value="turkish_latin_only">Turkish Latin only</option>' +
+        '<option value="english_or_arabic">English or Arabic</option>' +
+      '</select>' +
       '<input class="fb-options" placeholder="Options (comma separated)" value="' + escapeHtml((field.options || []).join(', ')) + '">' +
       '<label><input type="checkbox" class="fb-required"> Required</label>' +
       '<button class="btn fb-remove" type="button">Remove</button>';
 
     row.querySelector('.fb-type').value = field.type || 'text';
     row.querySelector('.fb-required').checked = !!field.required;
+    row.querySelector('.fb-text-rule').value = field.text_rule || 'none';
 
     function toggleOptions() {
       const type = row.querySelector('.fb-type').value;
       row.querySelector('.fb-options').style.display = ['select', 'radio', 'checkbox'].includes(type) ? '' : 'none';
+      row.querySelector('.fb-text-rule').style.display = ['text', 'textarea'].includes(type) ? '' : 'none';
+      if (!['text', 'textarea'].includes(type)) {
+        row.querySelector('.fb-text-rule').value = 'none';
+      }
     }
 
     row.querySelector('.fb-type').addEventListener('change', function () {
@@ -209,6 +221,16 @@ $scholarshipStatus = (string)($formBuilderScholarshipStatus ?? 'draft');
         type: type,
         required: !!field.required,
       };
+      if (['text', 'textarea'].includes(type)) {
+        const allowedRules = ['none', 'arabic_only', 'english_only', 'turkish_latin_only', 'english_or_arabic', 'latin_arabic'];
+        let textRule = String(field.text_rule || '').trim();
+        if (textRule === 'latin_arabic') {
+          textRule = 'english_or_arabic';
+        }
+        if (allowedRules.includes(textRule)) {
+          normalized.text_rule = textRule;
+        }
+      }
       if (['select', 'radio', 'checkbox'].includes(type)) {
         const options = Array.isArray(field.options)
           ? field.options.map(function (opt) { return String(opt || '').trim(); }).filter(Boolean)
@@ -234,6 +256,10 @@ $scholarshipStatus = (string)($formBuilderScholarshipStatus ?? 'draft');
         type: type,
         required: row.querySelector('.fb-required').checked,
       };
+      const textRule = row.querySelector('.fb-text-rule').value;
+      if (['text', 'textarea'].includes(type) && textRule) {
+        field.text_rule = textRule;
+      }
       if (['select', 'radio', 'checkbox'].includes(type)) {
         field.options = parseOptions(row.querySelector('.fb-options').value);
       }
