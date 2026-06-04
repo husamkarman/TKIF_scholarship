@@ -1541,6 +1541,11 @@ $adminSupportTargetEmail = '';
 $formBuilderSelectedTemplate = 'basic_application';
 $formBuilderDraftSchema = form_builder_starter_template_json('basic_application');
 $formBuilderTemplateMeta = form_builder_starter_template('basic_application');
+$formBuilderScholarships = [];
+$formBuilderScholarshipId = 0;
+$formBuilderScholarshipTitle = '';
+$formBuilderScholarshipDescription = '';
+$formBuilderScholarshipStatus = 'draft';
 $registerOld = [
   'full_name' => '',
   'email' => '',
@@ -2287,6 +2292,140 @@ if ($page === 'identity_diagnostics' && $pdo) {
   }
 }
 
+if ($page === 'form_builder_save' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
+  require_csrf();
+  $actor = require_login();
+  if (!in_array((string)$actor['role'], ['admin', 'it'], true)) {
+    http_response_code(403);
+    exit('Forbidden');
+  }
+
+  $scholarshipId = (int)($_POST['scholarship_id'] ?? 0);
+  $title = trim((string)($_POST['title'] ?? ''));
+  $description = trim((string)($_POST['description'] ?? ''));
+  $saveAction = trim((string)($_POST['save_action'] ?? 'save_draft'));
+  $selectedTemplate = trim((string)($_POST['selected_template'] ?? 'basic_application'));
+  $rawSchema = json_decode((string)($_POST['form_schema_json'] ?? '[]'), true);
+  $schema = normalize_form_schema($rawSchema);
+
+  if ($selectedTemplate === '' || !in_array($selectedTemplate, form_builder_starter_template_keys(), true)) {
+    $selectedTemplate = 'basic_application';
+  }
+
+  $targetStatus = $saveAction === 'publish' ? 'published' : 'draft';
+  if (!in_array($targetStatus, ['draft', 'published'], true)) {
+    $targetStatus = 'draft';
+  }
+
+  if ($title === '') {
+    $error = 'Form Builder: title is required.';
+  } elseif ($schema === []) {
+    $error = 'Form Builder: add at least one valid field.';
+  } elseif ($scholarshipId > 0) {
+    $existsStmt = $pdo->prepare('SELECT id FROM scholarships WHERE id = ? AND tenant_id = ? LIMIT 1');
+    $existsStmt->execute([$scholarshipId, (int)$actor['tenant_id']]);
+    if (!$existsStmt->fetch()) {
+      $error = 'Form Builder: selected scholarship was not found.';
+    }
+  }
+
+  if ($error === '') {
+    $schemaJson = json_encode($schema, JSON_UNESCAPED_UNICODE);
+    if (!is_string($schemaJson)) {
+      $error = 'Form Builder: failed to serialize schema JSON.';
+    } elseif ($scholarshipId > 0) {
+      $updateStmt = $pdo->prepare('UPDATE scholarships SET title = ?, description = ?, status = ?, form_schema_json = ? WHERE id = ? AND tenant_id = ?');
+      $updateStmt->execute([
+        $title,
+        $description !== '' ? $description : null,
+        $targetStatus,
+        $schemaJson,
+        $scholarshipId,
+        (int)$actor['tenant_id'],
+      ]);
+
+      if (scholarship_form_versioning_ready($pdo)) {
+        $maxStmt = $pdo->prepare('SELECT COALESCE(MAX(version_no), 0) AS max_version FROM scholarship_form_versions WHERE scholarship_id = ? AND tenant_id = ?');
+        $maxStmt->execute([$scholarshipId, (int)$actor['tenant_id']]);
+        $maxVersion = (int)($maxStmt->fetch()['max_version'] ?? 0);
+        $nextVersion = max(1, $maxVersion + 1);
+
+        $insertVersion = $pdo->prepare(
+          'INSERT INTO scholarship_form_versions (scholarship_id, tenant_id, version_no, status, form_schema_json, created_by)
+           VALUES (?, ?, ?, ?, ?, ?)'
+        );
+        $insertVersion->execute([
+          $scholarshipId,
+          (int)$actor['tenant_id'],
+          $nextVersion,
+          $targetStatus,
+          $schemaJson,
+          (int)$actor['id'],
+        ]);
+
+        if ($targetStatus === 'published') {
+          $archiveStmt = $pdo->prepare(
+            'UPDATE scholarship_form_versions
+             SET status = "archived"
+             WHERE scholarship_id = ? AND tenant_id = ? AND version_no <> ? AND status = "published"'
+          );
+          $archiveStmt->execute([$scholarshipId, (int)$actor['tenant_id'], $nextVersion]);
+          $message = 'Form Builder: published and saved version v' . (string)$nextVersion . '.';
+        } else {
+          $message = 'Form Builder: draft saved as version v' . (string)$nextVersion . '.';
+        }
+      } else {
+        $message = $targetStatus === 'published'
+          ? 'Form Builder: scholarship form published.'
+          : 'Form Builder: scholarship form draft saved.';
+      }
+    } else {
+      $insertStmt = $pdo->prepare('INSERT INTO scholarships (tenant_id, title, description, status, form_schema_json, created_by) VALUES (?, ?, ?, ?, ?, ?)');
+      $insertStmt->execute([
+        (int)$actor['tenant_id'],
+        $title,
+        $description !== '' ? $description : null,
+        $targetStatus,
+        $schemaJson,
+        (int)$actor['id'],
+      ]);
+      $scholarshipId = (int)$pdo->lastInsertId();
+
+      if (scholarship_form_versioning_ready($pdo)) {
+        $versionStmt = $pdo->prepare(
+          'INSERT INTO scholarship_form_versions (scholarship_id, tenant_id, version_no, status, form_schema_json, created_by)
+           VALUES (?, ?, 1, ?, ?, ?)'
+        );
+        $versionStmt->execute([
+          $scholarshipId,
+          (int)$actor['tenant_id'],
+          $targetStatus,
+          $schemaJson,
+          (int)$actor['id'],
+        ]);
+      }
+
+      $message = $targetStatus === 'published'
+        ? 'Form Builder: scholarship created and published.'
+        : 'Form Builder: scholarship created as draft.';
+    }
+  }
+
+  $page = 'form_builder';
+  $_GET['scholarship_id'] = (string)$scholarshipId;
+  $_GET['template'] = $selectedTemplate;
+  $formBuilderSelectedTemplate = $selectedTemplate;
+  $formBuilderTemplateMeta = form_builder_starter_template($selectedTemplate);
+  $formBuilderDraftSchema = json_encode($schema ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+  if (!is_string($formBuilderDraftSchema) || trim($formBuilderDraftSchema) === '') {
+    $formBuilderDraftSchema = form_builder_starter_template_json($selectedTemplate);
+  }
+  $formBuilderScholarshipId = $scholarshipId;
+  $formBuilderScholarshipTitle = $title;
+  $formBuilderScholarshipDescription = $description;
+  $formBuilderScholarshipStatus = $targetStatus;
+}
+
 if ($page === 'form_builder' && $pdo) {
   $actor = require_login();
   if (!in_array((string)$actor['role'], ['admin', 'it'], true)) {
@@ -2294,10 +2433,21 @@ if ($page === 'form_builder' && $pdo) {
     exit('Forbidden');
   }
 
-  $selectedTemplate = trim((string)($_GET['template'] ?? ''));
+  $schStmt = $pdo->prepare('SELECT id, title, description, status, form_schema_json FROM scholarships WHERE tenant_id = ? ORDER BY id DESC LIMIT 100');
+  $schStmt->execute([(int)$actor['tenant_id']]);
+  $formBuilderScholarships = $schStmt->fetchAll();
+
+  $selectedTemplate = trim((string)($_GET['template'] ?? $formBuilderSelectedTemplate));
+  $selectedScholarshipId = (int)($_GET['scholarship_id'] ?? $formBuilderScholarshipId);
+
   if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     require_csrf();
-    $selectedTemplate = trim((string)($_POST['template'] ?? ''));
+    $action = trim((string)($_POST['action'] ?? ''));
+    if ($action === 'load_template') {
+      $selectedTemplate = trim((string)($_POST['template'] ?? ''));
+    } elseif ($action === 'load_scholarship') {
+      $selectedScholarshipId = (int)($_POST['load_scholarship_id'] ?? 0);
+    }
   }
 
   if ($selectedTemplate === '' || !in_array($selectedTemplate, form_builder_starter_template_keys(), true)) {
@@ -2306,7 +2456,29 @@ if ($page === 'form_builder' && $pdo) {
 
   $formBuilderSelectedTemplate = $selectedTemplate;
   $formBuilderTemplateMeta = form_builder_starter_template($selectedTemplate);
-  $formBuilderDraftSchema = form_builder_starter_template_json($selectedTemplate);
+  if (trim($formBuilderDraftSchema) === '') {
+    $formBuilderDraftSchema = form_builder_starter_template_json($selectedTemplate);
+  }
+
+  if ($selectedScholarshipId > 0) {
+    foreach ($formBuilderScholarships as $scholarshipRow) {
+      if ((int)($scholarshipRow['id'] ?? 0) === $selectedScholarshipId) {
+        $formBuilderScholarshipId = $selectedScholarshipId;
+        $formBuilderScholarshipTitle = (string)($scholarshipRow['title'] ?? '');
+        $formBuilderScholarshipDescription = (string)($scholarshipRow['description'] ?? '');
+        $status = (string)($scholarshipRow['status'] ?? 'draft');
+        $formBuilderScholarshipStatus = in_array($status, ['draft', 'published', 'closed'], true) ? $status : 'draft';
+        $schemaJson = (string)($scholarshipRow['form_schema_json'] ?? '[]');
+        $decoded = json_decode($schemaJson, true);
+        $normalized = normalize_form_schema($decoded);
+        $pretty = json_encode($normalized, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+        if (is_string($pretty) && trim($pretty) !== '') {
+          $formBuilderDraftSchema = $pretty;
+        }
+        break;
+      }
+    }
+  }
 }
 
 if ($page === 'profile' && $pdo) {
