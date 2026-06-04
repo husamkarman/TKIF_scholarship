@@ -10,6 +10,7 @@ if (is_file(dirname(__DIR__) . '/vendor/autoload.php')) {
 require dirname(__DIR__) . '/app/lib/notify.php';
 require dirname(__DIR__) . '/app/lib/email_verification.php';
 require dirname(__DIR__) . '/app/lib/profile.php';
+require dirname(__DIR__) . '/app/lib/form_builder.php';
 require dirname(__DIR__) . '/app/controllers/profile_controller.php';
 
 use Shuchkin\SimpleXLSX;
@@ -1537,6 +1538,9 @@ $error = '';
 $verifyChallengeMeta = null;
 $adminSupportRows = [];
 $adminSupportTargetEmail = '';
+$formBuilderSelectedTemplate = 'basic_application';
+$formBuilderDraftSchema = form_builder_starter_template_json('basic_application');
+$formBuilderTemplateMeta = form_builder_starter_template('basic_application');
 $registerOld = [
   'full_name' => '',
   'email' => '',
@@ -2283,6 +2287,28 @@ if ($page === 'identity_diagnostics' && $pdo) {
   }
 }
 
+if ($page === 'form_builder' && $pdo) {
+  $actor = require_login();
+  if (!in_array((string)$actor['role'], ['admin', 'it'], true)) {
+    http_response_code(403);
+    exit('Forbidden');
+  }
+
+  $selectedTemplate = trim((string)($_GET['template'] ?? ''));
+  if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    require_csrf();
+    $selectedTemplate = trim((string)($_POST['template'] ?? ''));
+  }
+
+  if ($selectedTemplate === '' || !in_array($selectedTemplate, form_builder_starter_template_keys(), true)) {
+    $selectedTemplate = 'basic_application';
+  }
+
+  $formBuilderSelectedTemplate = $selectedTemplate;
+  $formBuilderTemplateMeta = form_builder_starter_template($selectedTemplate);
+  $formBuilderDraftSchema = form_builder_starter_template_json($selectedTemplate);
+}
+
 if ($page === 'profile' && $pdo) {
   $actor = require_login();
   $targetUserId = (int)($_GET['user_id'] ?? $actor['id']);
@@ -2919,6 +2945,7 @@ $user = current_user();
           <a href="<?= h(app_route('dashboard')) ?>">Dashboard</a>
           <a href="<?= h(app_route('profile')) ?>">Profile</a>
           <?php if (in_array((string)$user['role'], ['admin', 'it'], true)): ?>
+            <a href="<?= h(app_route('form_builder')) ?>">Form Builder</a>
             <a href="<?= h(app_route('identity_diagnostics')) ?>">Identity Diagnostics</a>
           <?php endif; ?>
           <a href="<?= h(app_route('logout')) ?>">Logout</a>
@@ -3072,6 +3099,9 @@ $user = current_user();
 
     <?php elseif ($page === 'dashboard' && $user): ?>
       <?php require __DIR__ . '/views/dashboard.php'; ?>
+
+    <?php elseif ($page === 'form_builder' && $user && $pdo): ?>
+      <?php require __DIR__ . '/views/form_builder.php'; ?>
 
     <?php elseif ($page === 'identity_diagnostics' && $user && $pdo): ?>
       <?php require __DIR__ . '/views/identity_diagnostics.php'; ?>

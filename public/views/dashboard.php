@@ -51,6 +51,12 @@
     ?>
     <?php if (in_array($user['role'], ['admin', 'it'], true)): ?>
       <div class="card" style="margin-bottom: 14px;">
+        <h3>Form Builder Workspace</h3>
+        <p>Step 12 has started. Open the dedicated workspace to load starter templates and shape schema drafts.</p>
+        <a class="btn" href="<?= h(app_route('form_builder')) ?>">Open Form Builder</a>
+      </div>
+
+      <div class="card" style="margin-bottom: 14px;">
         <h3>Create Scholarship</h3>
         <form method="post" action="/?page=create_scholarship" id="create-scholarship-form">
           <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
