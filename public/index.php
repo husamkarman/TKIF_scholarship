@@ -191,6 +191,63 @@ function oauth_state_cookie_name(string $provider): string
   return 'tkif_oauth_state_' . strtolower(trim($provider));
 }
 
+function oauth_state_signing_key(array $config, string $provider): string
+{
+  $provider = strtolower(trim($provider));
+  if ($provider === 'google') {
+    $secret = trim((string)($config['google']['client_secret'] ?? ''));
+    if ($secret !== '') {
+      return 'google|' . $secret;
+    }
+  }
+
+  if ($provider === 'microsoft') {
+    $secret = trim((string)($config['microsoft']['client_secret'] ?? ''));
+    if ($secret !== '') {
+      return 'microsoft|' . $secret;
+    }
+  }
+
+  return 'fallback|' . (string)($config['session_name'] ?? 'tkif_session');
+}
+
+function oauth_signed_state(array $config, string $provider): string
+{
+  $nonce = bin2hex(random_bytes(16));
+  $issuedAt = (string)time();
+  $payload = $provider . '|' . $nonce . '|' . $issuedAt;
+  $signature = hash_hmac('sha256', $payload, oauth_state_signing_key($config, $provider));
+  return $nonce . '.' . $issuedAt . '.' . $signature;
+}
+
+function oauth_is_signed_state_valid(array $config, string $provider, string $state): bool
+{
+  $parts = explode('.', trim($state));
+  if (count($parts) !== 3) {
+    return false;
+  }
+
+  [$nonce, $issuedAtRaw, $signature] = $parts;
+  if (!preg_match('/^[a-f0-9]{32}$/', $nonce)) {
+    return false;
+  }
+  if (!preg_match('/^\d{10}$/', $issuedAtRaw)) {
+    return false;
+  }
+  if (!preg_match('/^[a-f0-9]{64}$/', $signature)) {
+    return false;
+  }
+
+  $issuedAt = (int)$issuedAtRaw;
+  if ($issuedAt <= 0 || abs(time() - $issuedAt) > 900) {
+    return false;
+  }
+
+  $payload = $provider . '|' . $nonce . '|' . $issuedAtRaw;
+  $expected = hash_hmac('sha256', $payload, oauth_state_signing_key($config, $provider));
+  return hash_equals($expected, $signature);
+}
+
 function oauth_store_state(string $provider, string $sessionKey, string $state): void
 {
   $_SESSION[$sessionKey] = $state;
@@ -618,7 +675,7 @@ function microsoft_oauth_ready(array $config): bool
 function microsoft_authorize_url(array $config): string
 {
   $tenantId = (string)$config['microsoft']['tenant_id'];
-  $state = bin2hex(random_bytes(16));
+  $state = oauth_signed_state($config, 'microsoft');
   oauth_store_state('microsoft', 'ms_oauth_state', $state);
 
   $query = http_build_query([
@@ -781,7 +838,7 @@ function google_oauth_ready(array $config): bool
 
 function google_authorize_url(array $config): string
 {
-  $state = bin2hex(random_bytes(16));
+  $state = oauth_signed_state($config, 'google');
   oauth_store_state('google', 'google_oauth_state', $state);
 
   $query = http_build_query([
@@ -1901,7 +1958,10 @@ if ($page === 'verify_email' && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($
     $code = (string)($_GET['code'] ?? '');
     $savedState = oauth_read_state('microsoft', 'ms_oauth_state');
 
-    if ($state === '' || $savedState === '' || !hash_equals($savedState, $state)) {
+    $stateMatchesStored = $state !== '' && $savedState !== '' && hash_equals($savedState, $state);
+    $stateMatchesSigned = $state !== '' && oauth_is_signed_state_valid($config, 'microsoft', $state);
+
+    if (!$stateMatchesStored && !$stateMatchesSigned) {
       $error = 'OAuth state validation failed. Retry sign-in from the login page and confirm callback URL/domain is consistent.';
       $page = 'login';
     } elseif ($code === '') {
@@ -1999,7 +2059,10 @@ if ($page === 'verify_email' && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($
     $code = (string)($_GET['code'] ?? '');
     $savedState = oauth_read_state('google', 'google_oauth_state');
 
-    if ($state === '' || $savedState === '' || !hash_equals($savedState, $state)) {
+    $stateMatchesStored = $state !== '' && $savedState !== '' && hash_equals($savedState, $state);
+    $stateMatchesSigned = $state !== '' && oauth_is_signed_state_valid($config, 'google', $state);
+
+    if (!$stateMatchesStored && !$stateMatchesSigned) {
       $error = 'OAuth state validation failed. Retry sign-in from the login page and confirm callback URL/domain is consistent.';
       $page = 'login';
     } elseif ($code === '') {
