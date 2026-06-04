@@ -186,6 +186,46 @@ function app_route(string $page): string
   return app_base_path() . '/?page=' . rawurlencode($page);
 }
 
+function oauth_state_cookie_name(string $provider): string
+{
+  return 'tkif_oauth_state_' . strtolower(trim($provider));
+}
+
+function oauth_store_state(string $provider, string $sessionKey, string $state): void
+{
+  $_SESSION[$sessionKey] = $state;
+  setcookie(oauth_state_cookie_name($provider), $state, [
+    'expires' => time() + 600,
+    'path' => '/',
+    'secure' => false,
+    'httponly' => true,
+    'samesite' => 'Lax',
+  ]);
+}
+
+function oauth_read_state(string $provider, string $sessionKey): string
+{
+  $sessionState = trim((string)($_SESSION[$sessionKey] ?? ''));
+  if ($sessionState !== '') {
+    return $sessionState;
+  }
+
+  $cookieState = trim((string)($_COOKIE[oauth_state_cookie_name($provider)] ?? ''));
+  return $cookieState;
+}
+
+function oauth_clear_state(string $provider, string $sessionKey): void
+{
+  unset($_SESSION[$sessionKey]);
+  setcookie(oauth_state_cookie_name($provider), '', [
+    'expires' => time() - 3600,
+    'path' => '/',
+    'secure' => false,
+    'httponly' => true,
+    'samesite' => 'Lax',
+  ]);
+}
+
 function current_user(): ?array
 {
     return $_SESSION['user'] ?? null;
@@ -579,7 +619,7 @@ function microsoft_authorize_url(array $config): string
 {
   $tenantId = (string)$config['microsoft']['tenant_id'];
   $state = bin2hex(random_bytes(16));
-  $_SESSION['ms_oauth_state'] = $state;
+  oauth_store_state('microsoft', 'ms_oauth_state', $state);
 
   $query = http_build_query([
     'client_id' => (string)$config['microsoft']['client_id'],
@@ -742,7 +782,7 @@ function google_oauth_ready(array $config): bool
 function google_authorize_url(array $config): string
 {
   $state = bin2hex(random_bytes(16));
-  $_SESSION['google_oauth_state'] = $state;
+  oauth_store_state('google', 'google_oauth_state', $state);
 
   $query = http_build_query([
     'client_id' => (string)$config['google']['client_id'],
@@ -1859,16 +1899,16 @@ if ($page === 'verify_email' && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($
   if ($page === 'auth_microsoft_callback' && $pdo) {
     $state = (string)($_GET['state'] ?? '');
     $code = (string)($_GET['code'] ?? '');
-    $savedState = (string)($_SESSION['ms_oauth_state'] ?? '');
+    $savedState = oauth_read_state('microsoft', 'ms_oauth_state');
 
     if ($state === '' || $savedState === '' || !hash_equals($savedState, $state)) {
-      $error = 'OAuth state validation failed.';
+      $error = 'OAuth state validation failed. Retry sign-in from the login page and confirm callback URL/domain is consistent.';
       $page = 'login';
     } elseif ($code === '') {
       $error = 'Microsoft OAuth code is missing.';
       $page = 'login';
     } else {
-      unset($_SESSION['ms_oauth_state']);
+      oauth_clear_state('microsoft', 'ms_oauth_state');
       $tenantId = (string)$config['microsoft']['tenant_id'];
       $tokenUrl = 'https://login.microsoftonline.com/' . rawurlencode($tenantId) . '/oauth2/v2.0/token';
 
@@ -1957,16 +1997,16 @@ if ($page === 'verify_email' && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($
   if ($page === 'auth_google_callback' && $pdo) {
     $state = (string)($_GET['state'] ?? '');
     $code = (string)($_GET['code'] ?? '');
-    $savedState = (string)($_SESSION['google_oauth_state'] ?? '');
+    $savedState = oauth_read_state('google', 'google_oauth_state');
 
     if ($state === '' || $savedState === '' || !hash_equals($savedState, $state)) {
-      $error = 'OAuth state validation failed.';
+      $error = 'OAuth state validation failed. Retry sign-in from the login page and confirm callback URL/domain is consistent.';
       $page = 'login';
     } elseif ($code === '') {
       $error = 'Google OAuth code is missing.';
       $page = 'login';
     } else {
-      unset($_SESSION['google_oauth_state']);
+      oauth_clear_state('google', 'google_oauth_state');
       $tokenUrl = 'https://oauth2.googleapis.com/token';
       $tokenPayload = http_build_query([
         'client_id' => (string)$config['google']['client_id'],
