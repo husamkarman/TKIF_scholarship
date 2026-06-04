@@ -42,6 +42,17 @@
 3. Apply migration:
    - `mysql -u root -p < sql/migrations/20260603_add_email_verification.sql`
 
+## OAuth Preflight (Before Go-Live)
+1. Set production callbacks in `.env`:
+   - `GOOGLE_REDIRECT_URI_PROD=https://your-domain/?page=auth_google_callback`
+   - `MICROSOFT_REDIRECT_URI_PROD=https://your-domain/?page=auth_microsoft_callback`
+2. Set `APP_ENV=production`.
+3. Register the exact same redirect URIs in Google and Microsoft app consoles.
+4. Confirm provider client IDs in `.env` match the app registrations you edited.
+5. Run quick live check:
+   - open login page and click provider sign-in once.
+   - if provider shows mismatch, copy exact `redirect_uri` from error details and update console entry exactly.
+
 ## Step 10 Ops Hardening
 1. Apply rate limit migration:
    - `mysql -u root -p < sql/migrations/20260604_add_rate_limit_events.sql`

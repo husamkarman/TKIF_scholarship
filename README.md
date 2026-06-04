@@ -98,6 +98,27 @@ Registration can require email verification using either a code or a magic link.
    - Resend verification
    - Unlock user account
 
+## OAuth Runbook (Local vs Production)
+1. Keep redirect URIs consistent across app config and provider consoles.
+2. The app supports environment-specific OAuth callback values:
+   - `GOOGLE_REDIRECT_URI_LOCAL`, `GOOGLE_REDIRECT_URI_PROD`
+   - `MICROSOFT_REDIRECT_URI_LOCAL`, `MICROSOFT_REDIRECT_URI_PROD`
+3. Resolution rules:
+   - `APP_ENV=production` uses `*_REDIRECT_URI_PROD` first.
+   - Non-production uses `*_REDIRECT_URI_LOCAL` first.
+   - Legacy `*_REDIRECT_URI` is still supported as fallback.
+4. For `redirect_uri_mismatch`:
+   - capture the exact `redirect_uri` from provider error details.
+   - register that exact value under the matching OAuth client.
+   - verify the same client ID is configured in `.env`.
+
+## Production Cookie Security
+1. Session and OAuth state cookies use `HttpOnly` and `SameSite=Lax`.
+2. `Secure` cookie flag is automatically enabled when:
+   - the request is HTTPS, or
+   - `APP_ENV=production`
+3. In production, terminate TLS before PHP and forward protocol headers correctly.
+
 ## Security Rotation (Step 1)
 1. Rotate exposed secrets at provider side first (SMTP, Microsoft, Google, DB, internal worker token).
 2. Update `.env` with new values.

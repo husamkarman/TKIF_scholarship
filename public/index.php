@@ -15,6 +15,18 @@ require dirname(__DIR__) . '/app/controllers/profile_controller.php';
 use Shuchkin\SimpleXLSX;
 
 session_name($config['session_name']);
+$forwardedProto = strtolower(trim((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')));
+$requestIsHttps = (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off')
+  || (int)($_SERVER['SERVER_PORT'] ?? 0) === 443
+  || $forwardedProto === 'https';
+$cookieSecure = $requestIsHttps || strtolower((string)($config['app_env'] ?? 'local')) === 'production';
+session_set_cookie_params([
+  'lifetime' => 0,
+  'path' => '/',
+  'secure' => $cookieSecure,
+  'httponly' => true,
+  'samesite' => 'Lax',
+]);
 session_start();
 
 function h(string $value): string
@@ -191,6 +203,16 @@ function oauth_state_cookie_name(string $provider): string
   return 'tkif_oauth_state_' . strtolower(trim($provider));
 }
 
+function oauth_cookie_secure(array $config): bool
+{
+  $forwardedProto = strtolower(trim((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')));
+  $requestIsHttps = (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off')
+    || (int)($_SERVER['SERVER_PORT'] ?? 0) === 443
+    || $forwardedProto === 'https';
+
+  return $requestIsHttps || strtolower((string)($config['app_env'] ?? 'local')) === 'production';
+}
+
 function oauth_state_signing_key(array $config, string $provider): string
 {
   $provider = strtolower(trim($provider));
@@ -248,13 +270,13 @@ function oauth_is_signed_state_valid(array $config, string $provider, string $st
   return hash_equals($expected, $signature);
 }
 
-function oauth_store_state(string $provider, string $sessionKey, string $state): void
+function oauth_store_state(array $config, string $provider, string $sessionKey, string $state): void
 {
   $_SESSION[$sessionKey] = $state;
   setcookie(oauth_state_cookie_name($provider), $state, [
     'expires' => time() + 600,
     'path' => '/',
-    'secure' => false,
+    'secure' => oauth_cookie_secure($config),
     'httponly' => true,
     'samesite' => 'Lax',
   ]);
@@ -271,13 +293,13 @@ function oauth_read_state(string $provider, string $sessionKey): string
   return $cookieState;
 }
 
-function oauth_clear_state(string $provider, string $sessionKey): void
+function oauth_clear_state(array $config, string $provider, string $sessionKey): void
 {
   unset($_SESSION[$sessionKey]);
   setcookie(oauth_state_cookie_name($provider), '', [
     'expires' => time() - 3600,
     'path' => '/',
-    'secure' => false,
+    'secure' => oauth_cookie_secure($config),
     'httponly' => true,
     'samesite' => 'Lax',
   ]);
@@ -676,7 +698,7 @@ function microsoft_authorize_url(array $config): string
 {
   $tenantId = (string)$config['microsoft']['tenant_id'];
   $state = oauth_signed_state($config, 'microsoft');
-  oauth_store_state('microsoft', 'ms_oauth_state', $state);
+  oauth_store_state($config, 'microsoft', 'ms_oauth_state', $state);
 
   $query = http_build_query([
     'client_id' => (string)$config['microsoft']['client_id'],
@@ -839,7 +861,7 @@ function google_oauth_ready(array $config): bool
 function google_authorize_url(array $config): string
 {
   $state = oauth_signed_state($config, 'google');
-  oauth_store_state('google', 'google_oauth_state', $state);
+  oauth_store_state($config, 'google', 'google_oauth_state', $state);
 
   $query = http_build_query([
     'client_id' => (string)$config['google']['client_id'],
@@ -1968,7 +1990,7 @@ if ($page === 'verify_email' && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($
       $error = 'Microsoft OAuth code is missing.';
       $page = 'login';
     } else {
-      oauth_clear_state('microsoft', 'ms_oauth_state');
+      oauth_clear_state($config, 'microsoft', 'ms_oauth_state');
       $tenantId = (string)$config['microsoft']['tenant_id'];
       $tokenUrl = 'https://login.microsoftonline.com/' . rawurlencode($tenantId) . '/oauth2/v2.0/token';
 
@@ -2069,7 +2091,7 @@ if ($page === 'verify_email' && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($
       $error = 'Google OAuth code is missing.';
       $page = 'login';
     } else {
-      oauth_clear_state('google', 'google_oauth_state');
+      oauth_clear_state($config, 'google', 'google_oauth_state');
       $tokenUrl = 'https://oauth2.googleapis.com/token';
       $tokenPayload = http_build_query([
         'client_id' => (string)$config['google']['client_id'],

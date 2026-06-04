@@ -31,9 +31,36 @@ function env(string $key, ?string $default = null): ?string
     return $vars[$key] ?? getenv($key) ?: $default;
 }
 
+function resolve_oauth_redirect_uri(string $providerPrefix, string $appEnv): string
+{
+    $legacy = trim((string)env($providerPrefix . '_REDIRECT_URI', ''));
+    $local = trim((string)env($providerPrefix . '_REDIRECT_URI_LOCAL', ''));
+    $prod = trim((string)env($providerPrefix . '_REDIRECT_URI_PROD', ''));
+
+    if ($appEnv === 'production') {
+        if ($prod !== '') {
+            return $prod;
+        }
+        if ($legacy !== '') {
+            return $legacy;
+        }
+        return $local;
+    }
+
+    if ($local !== '') {
+        return $local;
+    }
+    if ($legacy !== '') {
+        return $legacy;
+    }
+    return $prod;
+}
+
+$appEnv = (string)env('APP_ENV', 'local');
+
 return [
     'app_name' => env('APP_NAME', 'TKIF Scholarship MVP'),
-    'app_env' => env('APP_ENV', 'local'),
+    'app_env' => $appEnv,
     'session_name' => env('SESSION_NAME', 'tkif_session'),
     'db' => [
         'host' => env('DB_HOST', '127.0.0.1'),
@@ -109,7 +136,7 @@ return [
     'microsoft' => [
         'client_id' => env('MICROSOFT_CLIENT_ID', ''),
         'tenant_id' => env('MICROSOFT_TENANT_ID', ''),
-        'redirect_uri' => env('MICROSOFT_REDIRECT_URI', ''),
+        'redirect_uri' => resolve_oauth_redirect_uri('MICROSOFT', $appEnv),
         'client_secret' => env('MICROSOFT_CLIENT_SECRET', ''),
         'auto_provision' => env('MICROSOFT_AUTO_PROVISION', 'true') === 'true',
         'allowed_domain' => env('MICROSOFT_ALLOWED_DOMAIN', ''),
@@ -119,7 +146,7 @@ return [
     'google' => [
         'client_id' => env('GOOGLE_CLIENT_ID', ''),
         'client_secret' => env('GOOGLE_CLIENT_SECRET', ''),
-        'redirect_uri' => env('GOOGLE_REDIRECT_URI', ''),
+        'redirect_uri' => resolve_oauth_redirect_uri('GOOGLE', $appEnv),
         'auto_provision' => env('GOOGLE_AUTO_PROVISION', 'true') === 'true',
         'allowed_domain' => env('GOOGLE_ALLOWED_DOMAIN', ''),
         'default_role' => env('GOOGLE_DEFAULT_ROLE', 'student'),
