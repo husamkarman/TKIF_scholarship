@@ -1096,6 +1096,26 @@ function text_rule_error_message(string $textRule): string
   return 'Invalid text format.';
 }
 
+function form_schema_text_rules(array $schema): array
+{
+  $rules = [];
+  foreach ($schema as $field) {
+    if (!is_array($field)) {
+      continue;
+    }
+    $fieldName = trim((string)($field['name'] ?? ''));
+    if ($fieldName === '') {
+      continue;
+    }
+    $rule = normalize_text_rule((string)($field['text_rule'] ?? ''));
+    if ($rule === '') {
+      continue;
+    }
+    $rules[$fieldName] = $rule;
+  }
+  return $rules;
+}
+
 function field_is_visible(array $field, array $answers): bool
 {
   $visibleIf = $field['visible_if'] ?? null;
@@ -2623,6 +2643,8 @@ if ($page === 'apply' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
         'scholarship_title' => (string)($scholarship['title'] ?? ''),
         'student_email' => $user['email'],
         'reason' => $reason,
+        'form_schema_version' => $formVersion,
+        'form_text_rules' => form_schema_text_rules($schema),
       ]);
       process_notification_queue($pdo, $config, 5);
 
@@ -2723,6 +2745,8 @@ if ($page === 'apply' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
         'scholarship_title' => (string)($scholarship['title'] ?? ''),
         'student_email' => $user['email'],
         'answers_json' => json_encode($answers, JSON_UNESCAPED_UNICODE),
+        'form_schema_version' => $formVersion,
+        'form_text_rules' => form_schema_text_rules($schema),
       ]);
       process_notification_queue($pdo, $config, 5);
 
@@ -3117,13 +3141,15 @@ if ($page === 'decide' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
         json_encode(['reason' => $reason], JSON_UNESCAPED_UNICODE),
     ]);
 
-    $metaStmt = $pdo->prepare('SELECT a.scholarship_id, s.title AS scholarship_title, st.email AS student_email
+    $metaStmt = $pdo->prepare('SELECT a.scholarship_id, s.title AS scholarship_title, s.form_schema_json, st.email AS student_email
       FROM applications a
       JOIN scholarships s ON s.id = a.scholarship_id
       JOIN users st ON st.id = a.student_id
       WHERE a.id = ? AND a.tenant_id = ? LIMIT 1');
     $metaStmt->execute([$applicationId, $user['tenant_id']]);
     $decisionMeta = $metaStmt->fetch() ?: [];
+
+    $decisionSchema = normalize_form_schema(json_decode((string)($decisionMeta['form_schema_json'] ?? '[]'), true));
 
     enqueue_internal_notification($pdo, [
         'event' => 'application_' . $status,
@@ -3134,6 +3160,7 @@ if ($page === 'decide' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
       'student_email' => (string)($decisionMeta['student_email'] ?? ''),
       'status' => $status,
       'reason' => $reason,
+      'form_text_rules' => form_schema_text_rules($decisionSchema),
         'by' => $user['email'],
     ]);
     process_notification_queue($pdo, $config, 5);
