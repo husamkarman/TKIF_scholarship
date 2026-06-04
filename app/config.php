@@ -61,6 +61,34 @@ return [
         'resend_cooldown_seconds' => (int)env('EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS', '30'),
         'require_for_login' => env('EMAIL_VERIFICATION_REQUIRE_FOR_LOGIN', 'true') === 'true',
     ],
+    'security' => [
+        'rate_limits' => [
+            'login' => [
+                'max' => (int)env('RATE_LIMIT_LOGIN_MAX', '10'),
+                'window_seconds' => (int)env('RATE_LIMIT_LOGIN_WINDOW_SECONDS', '300'),
+            ],
+            'register' => [
+                'max' => (int)env('RATE_LIMIT_REGISTER_MAX', '5'),
+                'window_seconds' => (int)env('RATE_LIMIT_REGISTER_WINDOW_SECONDS', '900'),
+            ],
+            'verify_code' => [
+                'max' => (int)env('RATE_LIMIT_VERIFY_CODE_MAX', '10'),
+                'window_seconds' => (int)env('RATE_LIMIT_VERIFY_CODE_WINDOW_SECONDS', '300'),
+            ],
+            'verify_resend' => [
+                'max' => (int)env('RATE_LIMIT_VERIFY_RESEND_MAX', '5'),
+                'window_seconds' => (int)env('RATE_LIMIT_VERIFY_RESEND_WINDOW_SECONDS', '600'),
+            ],
+            'otp_request' => [
+                'max' => (int)env('RATE_LIMIT_OTP_REQUEST_MAX', '5'),
+                'window_seconds' => (int)env('RATE_LIMIT_OTP_REQUEST_WINDOW_SECONDS', '900'),
+            ],
+            'otp_verify' => [
+                'max' => (int)env('RATE_LIMIT_OTP_VERIFY_MAX', '10'),
+                'window_seconds' => (int)env('RATE_LIMIT_OTP_VERIFY_WINDOW_SECONDS', '300'),
+            ],
+        ],
+    ],
     'smtp' => [
         'enabled' => env('SMTP_ENABLED', 'false') === 'true',
         'host' => env('SMTP_HOST', ''),

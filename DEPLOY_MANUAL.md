@@ -42,6 +42,18 @@
 3. Apply migration:
    - `mysql -u root -p < sql/migrations/20260603_add_email_verification.sql`
 
+## Step 10 Ops Hardening
+1. Apply rate limit migration:
+   - `mysql -u root -p < sql/migrations/20260604_add_rate_limit_events.sql`
+2. Add nightly cleanup cron:
+   - `0 3 * * * /usr/local/bin/php /home/USER/public_html/scripts/cleanup_maintenance.php --apply >/dev/null 2>&1`
+3. Add periodic health check cron (every 5 minutes):
+   - `*/5 * * * * /usr/local/bin/php /home/USER/public_html/scripts/ops_health_check.php >/dev/null 2>&1`
+4. Use Dashboard -> Admin Support Tools for:
+   - resend verification
+   - unlock user
+   - inspect verification attempts
+
 ## Post-Upload Smoke Tests
 1. Login with each role and verify dashboard opens.
 2. Register a new guest account and verify it lands on `/?page=verify_email`.

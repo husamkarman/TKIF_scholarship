@@ -169,6 +169,41 @@
           <button class="btn" type="submit">Import Blacklist File</button>
         </form>
       </div>
+
+      <div class="card" style="margin-bottom: 14px;">
+        <h3>Admin Support Tools</h3>
+        <form method="post" action="/?page=admin_user_support">
+          <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+          <label>Target User Email</label>
+          <input type="email" name="target_email" value="<?= h((string)($adminSupportTargetEmail ?? '')) ?>" required>
+          <label>Action</label>
+          <select name="support_action" required>
+            <option value="verification_attempts">View Verification Attempts</option>
+            <option value="resend_verification">Resend Verification</option>
+            <option value="unlock_user">Unlock User Account</option>
+          </select>
+          <br>
+          <button class="btn" type="submit">Run Support Action</button>
+        </form>
+
+        <?php if (!empty($adminSupportRows)): ?>
+          <h4 style="margin-top: 12px;">Recent Verification Attempts</h4>
+          <table class="table">
+            <thead><tr><th>ID</th><th>Channel</th><th>Created</th><th>Expires</th><th>Consumed</th></tr></thead>
+            <tbody>
+            <?php foreach ($adminSupportRows as $row): ?>
+              <tr>
+                <td><?= (int)$row['id'] ?></td>
+                <td><?= h((string)$row['channel']) ?></td>
+                <td><?= h((string)$row['created_at']) ?></td>
+                <td><?= h((string)$row['expires_at']) ?></td>
+                <td><?= h((string)($row['consumed_at'] ?? '')) ?></td>
+              </tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+        <?php endif; ?>
+      </div>
     <?php endif; ?>
     <?php
       $stmt = $pdo->prepare('SELECT a.id, a.status, a.rejection_reason, a.created_at, u.full_name AS student_name, s.title AS scholarship_title

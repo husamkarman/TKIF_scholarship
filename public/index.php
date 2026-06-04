@@ -74,6 +74,89 @@ function request_header_value(string $name): string
   return '';
 }
 
+function client_ip(): string
+{
+  $keys = ['HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR', 'REMOTE_ADDR'];
+  foreach ($keys as $key) {
+    $value = trim((string)($_SERVER[$key] ?? ''));
+    if ($value === '') {
+      continue;
+    }
+    if ($key === 'HTTP_X_FORWARDED_FOR') {
+      $parts = explode(',', $value);
+      $value = trim((string)($parts[0] ?? ''));
+    }
+    if ($value !== '') {
+      return substr($value, 0, 64);
+    }
+  }
+  return 'unknown';
+}
+
+function rate_limit_ready(PDO $pdo): bool
+{
+  static $ready = null;
+  if (is_bool($ready)) {
+    return $ready;
+  }
+
+  try {
+    $stmt = $pdo->query("SHOW TABLES LIKE 'rate_limit_events'");
+    $ready = $stmt !== false && (bool)$stmt->fetchColumn();
+  } catch (Throwable) {
+    $ready = false;
+  }
+
+  return $ready;
+}
+
+function rate_limit_check(PDO $pdo, string $actionKey, string $clientKey, int $maxAttempts, int $windowSeconds): bool
+{
+  if (!rate_limit_ready($pdo)) {
+    return true;
+  }
+
+  $maxAttempts = max(1, $maxAttempts);
+  $windowSeconds = max(1, $windowSeconds);
+
+  $countStmt = $pdo->prepare(
+    'SELECT COUNT(*)
+     FROM rate_limit_events
+     WHERE action_key = ? AND client_key = ? AND created_at >= DATE_SUB(NOW(), INTERVAL ? SECOND)'
+  );
+  $countStmt->execute([$actionKey, $clientKey, $windowSeconds]);
+  $attemptCount = (int)$countStmt->fetchColumn();
+
+  if ($attemptCount >= $maxAttempts) {
+    return false;
+  }
+
+  $insertStmt = $pdo->prepare('INSERT INTO rate_limit_events (action_key, client_key) VALUES (?, ?)');
+  $insertStmt->execute([$actionKey, $clientKey]);
+
+  return true;
+}
+
+function rate_limit_allow_request(PDO $pdo, array $config, string $actionKey, string $identityKey = ''): bool
+{
+  $limits = $config['security']['rate_limits'] ?? [];
+  $limit = $limits[$actionKey] ?? null;
+  if (!is_array($limit)) {
+    return true;
+  }
+
+  $max = max(1, (int)($limit['max'] ?? 10));
+  $windowSeconds = max(1, (int)($limit['window_seconds'] ?? 300));
+  $ip = client_ip();
+
+  $clientKey = $actionKey . '|ip:' . $ip;
+  if ($identityKey !== '') {
+    $clientKey .= '|id:' . substr($identityKey, 0, 120);
+  }
+
+  return rate_limit_check($pdo, $actionKey, $clientKey, $max, $windowSeconds);
+}
+
 function app_base_path(): string
 {
   $scriptName = str_replace('\\', '/', (string)($_SERVER['SCRIPT_NAME'] ?? ''));
@@ -1333,6 +1416,8 @@ $page = $_GET['page'] ?? 'home';
 $message = '';
 $error = '';
 $verifyChallengeMeta = null;
+$adminSupportRows = [];
+$adminSupportTargetEmail = '';
 $registerOld = [
   'full_name' => '',
   'email' => '',
@@ -1486,6 +1571,11 @@ if ($page === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
     $email = trim((string)($_POST['email'] ?? ''));
     $password = (string)($_POST['password'] ?? '');
 
+    if (!rate_limit_allow_request($pdo, $config, 'login', normalize_email($email))) {
+      $error = 'Too many login attempts. Please try again later.';
+      $page = 'login';
+    } else {
+
     $user = find_active_user_by_email($pdo, $email);
 
     if ($user && password_verify($password, $user['password_hash'])) {
@@ -1516,10 +1606,17 @@ if ($page === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
     if (!$user || !password_verify($password, $user['password_hash'])) {
       $error = 'Invalid credentials';
     }
+    }
 }
 
 if ($page === 'register' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
     require_csrf();
+    $candidateEmail = normalize_email((string)($_POST['email'] ?? ''));
+
+    if (!rate_limit_allow_request($pdo, $config, 'register', $candidateEmail)) {
+      $error = 'Too many registration attempts. Please try again later.';
+      $page = 'register';
+    } else {
 
     if (($config['registration']['enabled'] ?? true) !== true) {
       $error = 'Registration is currently disabled.';
@@ -1614,6 +1711,7 @@ if ($page === 'register' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
         $page = 'register';
       }
     }
+    }
 }
 
 if ($page === 'verify_email' && isset($_GET['token']) && $pdo) {
@@ -1654,6 +1752,9 @@ if ($page === 'verify_email' && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($
     } else {
       $action = trim((string)($_POST['action'] ?? 'verify_code'));
       if ($action === 'resend') {
+        if (!rate_limit_allow_request($pdo, $config, 'verify_resend', (string)$pendingUser['email'])) {
+          $error = 'Too many resend requests. Please wait before trying again.';
+        } else {
         $issue = email_verification_issue($pdo, $config, $pendingUser, app_route('verify_email'));
         if (($issue['ok'] ?? false) === true) {
           $message = (($issue['method'] ?? 'code') === 'code')
@@ -1662,7 +1763,11 @@ if ($page === 'verify_email' && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($
         } else {
           $error = (string)($issue['reason'] ?? 'Unable to resend verification right now.');
         }
+        }
       } else {
+        if (!rate_limit_allow_request($pdo, $config, 'verify_code', (string)$pendingUser['email'])) {
+          $error = 'Too many verification attempts. Please try again later.';
+        } else {
         if (email_verification_method($config) !== 'code') {
           $error = 'Use the verification link sent to your email.';
         } else {
@@ -1685,6 +1790,7 @@ if ($page === 'verify_email' && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($
             }
           }
         }
+        }
       }
       $page = 'verify_email';
     }
@@ -1695,7 +1801,9 @@ if ($page === 'verify_email' && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($
     require_csrf();
     $email = trim((string)($_POST['email'] ?? ''));
 
-    if (!otp_ready($config)) {
+    if (!rate_limit_allow_request($pdo, $config, 'otp_request', normalize_email($email))) {
+      $error = 'Too many OTP requests. Please try again later.';
+    } elseif (!otp_ready($config)) {
       $error = 'OTP login is not configured yet.';
     } else {
       $user = find_active_user_by_email($pdo, $email);
@@ -1713,8 +1821,11 @@ if ($page === 'verify_email' && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($
     require_csrf();
     $code = trim((string)($_POST['otp_code'] ?? ''));
     $otpUserId = (int)($_SESSION['otp_user_id'] ?? 0);
+    $otpUserEmail = trim((string)($_SESSION['otp_user_email'] ?? ''));
 
-    if ($otpUserId <= 0) {
+    if (!rate_limit_allow_request($pdo, $config, 'otp_verify', normalize_email($otpUserEmail))) {
+      $error = 'Too many OTP verification attempts. Please try again later.';
+    } elseif ($otpUserId <= 0) {
       $error = 'Request OTP first.';
     } elseif ($code === '') {
       $error = 'Enter the OTP code.';
@@ -2365,6 +2476,67 @@ if ($page === 'blacklist_import' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pd
         $message = 'Blacklist import complete. Inserted: ' . (string)$inserted . ', Auto-rejected in-flight: ' . (string)$rejectedTotal;
         $page = 'dashboard';
       }
+    }
+  }
+}
+
+if ($page === 'admin_user_support' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
+  require_csrf();
+  $actor = require_login();
+  if (!in_array((string)$actor['role'], ['admin', 'it'], true)) {
+    http_response_code(403);
+    exit('Forbidden');
+  }
+
+  $action = trim((string)($_POST['support_action'] ?? ''));
+  $targetEmail = normalize_email((string)($_POST['target_email'] ?? ''));
+  $adminSupportTargetEmail = $targetEmail;
+
+  if (!filter_var($targetEmail, FILTER_VALIDATE_EMAIL)) {
+    $error = 'Provide a valid target email.';
+    $page = 'dashboard';
+  } else {
+    $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, is_active, email_verified_at FROM users WHERE tenant_id = ? AND LOWER(TRIM(email)) = ? LIMIT 1');
+    $targetStmt->execute([(int)$actor['tenant_id'], $targetEmail]);
+    $targetUser = $targetStmt->fetch();
+
+    if (!$targetUser) {
+      $error = 'Target user not found in your tenant.';
+      $page = 'dashboard';
+    } else {
+      if ($action === 'unlock_user') {
+        $unlockStmt = $pdo->prepare('UPDATE users SET is_active = 1 WHERE id = ?');
+        $unlockStmt->execute([(int)$targetUser['id']]);
+        $message = 'User account unlocked (if it was locked).';
+      } elseif ($action === 'resend_verification') {
+        if (trim((string)($targetUser['email_verified_at'] ?? '')) !== '') {
+          $message = 'User email is already verified.';
+        } else {
+          $issue = email_verification_issue($pdo, $config, $targetUser, app_route('verify_email'));
+          if (($issue['ok'] ?? false) === true) {
+            $message = (($issue['method'] ?? 'code') === 'code')
+              ? 'Verification code re-sent to user email.'
+              : 'Verification link re-sent to user email.';
+          } else {
+            $error = (string)($issue['reason'] ?? 'Failed to resend verification.');
+          }
+        }
+      } elseif ($action === 'verification_attempts') {
+        $attemptStmt = $pdo->prepare(
+          'SELECT id, channel, created_at, expires_at, consumed_at
+           FROM email_verification_challenges
+           WHERE user_id = ?
+           ORDER BY id DESC
+           LIMIT 20'
+        );
+        $attemptStmt->execute([(int)$targetUser['id']]);
+        $adminSupportRows = $attemptStmt->fetchAll();
+        $message = 'Loaded verification attempts for ' . $targetEmail . '.';
+      } else {
+        $error = 'Unsupported admin support action.';
+      }
+
+      $page = 'dashboard';
     }
   }
 }

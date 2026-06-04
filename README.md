@@ -61,7 +61,8 @@ Registration can require email verification using either a code or a magic link.
    - `EMAIL_VERIFICATION_ENABLED=true|false`
    - `EMAIL_VERIFICATION_METHOD=code|link`
    - `EMAIL_VERIFICATION_CODE_LENGTH=6`
-   - `EMAIL_VERIFICATION_TTL_MINUTES=15`
+   - `EMAIL_VERIFICATION_TTL_MINUTES=3`
+   - `EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS=30`
    - `EMAIL_VERIFICATION_REQUIRE_FOR_LOGIN=true|false`
 3. SMTP must be configured (`SMTP_ENABLED=true`) to deliver code/link emails.
 4. Flow:
@@ -69,6 +70,33 @@ Registration can require email verification using either a code or a magic link.
    - App sends verification code or link.
    - User verifies at `/?page=verify_email`.
    - User is allowed into dashboard after verification.
+
+## Step 10 Hardening (Ops + Abuse Protection)
+1. Auth/verification rate limiting is enabled for:
+   - login
+   - register
+   - verify code
+   - resend verification
+   - OTP request
+   - OTP verify
+2. Configure `.env` as needed:
+   - `RATE_LIMIT_LOGIN_MAX`, `RATE_LIMIT_LOGIN_WINDOW_SECONDS`
+   - `RATE_LIMIT_REGISTER_MAX`, `RATE_LIMIT_REGISTER_WINDOW_SECONDS`
+   - `RATE_LIMIT_VERIFY_CODE_MAX`, `RATE_LIMIT_VERIFY_CODE_WINDOW_SECONDS`
+   - `RATE_LIMIT_VERIFY_RESEND_MAX`, `RATE_LIMIT_VERIFY_RESEND_WINDOW_SECONDS`
+   - `RATE_LIMIT_OTP_REQUEST_MAX`, `RATE_LIMIT_OTP_REQUEST_WINDOW_SECONDS`
+   - `RATE_LIMIT_OTP_VERIFY_MAX`, `RATE_LIMIT_OTP_VERIFY_WINDOW_SECONDS`
+3. Apply migration:
+   - `mysql -u root -p < sql/migrations/20260604_add_rate_limit_events.sql`
+4. Cleanup automation:
+   - Preview cleanup: `php scripts/cleanup_maintenance.php`
+   - Apply cleanup: `php scripts/cleanup_maintenance.php --apply`
+5. Health check:
+   - `php scripts/ops_health_check.php`
+6. Admin/IT support tools in dashboard:
+   - View verification attempts
+   - Resend verification
+   - Unlock user account
 
 ## Security Rotation (Step 1)
 1. Rotate exposed secrets at provider side first (SMTP, Microsoft, Google, DB, internal worker token).
