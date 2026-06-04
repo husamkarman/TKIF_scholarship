@@ -10,6 +10,7 @@ if (is_file(dirname(__DIR__) . '/vendor/autoload.php')) {
 require dirname(__DIR__) . '/app/lib/notify.php';
 require dirname(__DIR__) . '/app/lib/email_verification.php';
 require dirname(__DIR__) . '/app/lib/profile.php';
+require dirname(__DIR__) . '/app/lib/phone_codes.php';
 require dirname(__DIR__) . '/app/lib/form_builder.php';
 require dirname(__DIR__) . '/app/controllers/profile_controller.php';
 
@@ -954,7 +955,7 @@ function normalize_form_schema(mixed $schema): array
     return [];
   }
 
-  $allowedTypes = ['text', 'textarea', 'number', 'email', 'date', 'select', 'radio', 'checkbox'];
+  $allowedTypes = ['text', 'textarea', 'number', 'email', 'date', 'select', 'radio', 'checkbox', 'phone'];
   $normalized = [];
 
   foreach ($schema as $field) {
@@ -1006,6 +1007,16 @@ function normalize_form_schema(mixed $schema): array
         continue;
       }
       $normalizedField['options'] = $options;
+    }
+
+    if ($type === 'phone') {
+      $defaultCountryCode = trim((string)($field['default_country_code'] ?? '+90'));
+      if (!preg_match('/^\+[0-9]{1,4}$/', $defaultCountryCode)) {
+        $defaultCountryCode = '+90';
+      }
+      $normalizedField['default_country_code'] = $defaultCountryCode;
+      $normalizedField['allow_country_change'] = ($field['allow_country_change'] ?? true) !== false;
+      $normalizedField['validation_mode'] = 'country_strict';
     }
 
     $visibleIf = $field['visible_if'] ?? null;
@@ -1181,7 +1192,7 @@ function field_is_visible(array $field, array $answers): bool
   }
 }
 
-function render_dynamic_field(array $field, array $old = []): void
+function render_dynamic_field(array $field, array $old = [], array $phoneCountries = []): void
 {
   $name = (string)$field['name'];
   $label = (string)$field['label'];
@@ -1251,6 +1262,44 @@ function render_dynamic_field(array $field, array $old = []): void
       $checked = in_array($optionValue, $selectedValues, true) ? ' checked' : '';
       echo '<label><input type="checkbox" name="answers[' . h($name) . '][]" value="' . h($optionValue) . '"' . $checked . '> ' . h($optionValue) . '</label>';
     }
+    echo '</div>';
+    return;
+  }
+
+  if ($type === 'phone') {
+    $rawPhone = is_array($value) ? $value : [];
+    $defaultCode = trim((string)($field['default_country_code'] ?? '+90'));
+    $selectedCode = trim((string)($rawPhone['country_code'] ?? $defaultCode));
+    $numberValue = trim((string)($rawPhone['number'] ?? ''));
+    $allowCountryChange = ($field['allow_country_change'] ?? true) !== false;
+    $countryDisabledAttr = $allowCountryChange ? '' : ' disabled';
+    $hiddenSelected = !$allowCountryChange
+      ? '<input type="hidden" name="answers[' . h($name) . '][country_code]" value="' . h($selectedCode) . '">'
+      : '';
+
+    echo '<div class="grid">';
+    echo '<div>';
+    echo '<label>' . h($label) . ' Country Code' . ($required ? ' *' : '') . '</label>';
+    echo '<select name="answers[' . h($name) . '][country_code]"' . $requiredAttr . $countryDisabledAttr . '>';
+    echo '<option value="">Select code...</option>';
+    foreach ($phoneCountries as $country) {
+      $dialCode = trim((string)($country['dial_code'] ?? ''));
+      if ($dialCode === '') {
+        continue;
+      }
+      $countryName = trim((string)($country['country_name'] ?? 'Country'));
+      $selected = $selectedCode === $dialCode ? ' selected' : '';
+      echo '<option value="' . h($dialCode) . '"' . $selected . '>' . h($dialCode . ' - ' . $countryName) . '</option>';
+    }
+    echo '</select>';
+    echo $hiddenSelected;
+    echo '</div>';
+
+    echo '<div>';
+    echo '<label>' . h($label) . ' Number' . ($required ? ' *' : '') . '</label>';
+    echo '<input name="answers[' . h($name) . '][number]" type="text" inputmode="numeric" value="' . h($numberValue) . '"' . $requiredAttr . '>';
+    echo '</div>';
+    echo '</div>';
     echo '</div>';
     return;
   }
@@ -1630,9 +1679,13 @@ $formBuilderScholarshipId = 0;
 $formBuilderScholarshipTitle = '';
 $formBuilderScholarshipDescription = '';
 $formBuilderScholarshipStatus = 'draft';
+$phoneCodeRows = [];
+$phoneCodeEdit = null;
 $registerOld = [
   'full_name' => '',
   'email' => '',
+  'phone_country_code' => '+90',
+  'phone_number' => '',
 ];
 
 if ($page === 'notification_worker_run') {
@@ -1836,12 +1889,16 @@ if ($page === 'register' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
     } else {
       $fullName = trim((string)($_POST['full_name'] ?? ''));
       $email = normalize_email((string)($_POST['email'] ?? ''));
+      $phoneCountryCode = trim((string)($_POST['phone_country_code'] ?? ''));
+      $phoneNumber = trim((string)($_POST['phone_number'] ?? ''));
       $password = (string)($_POST['password'] ?? '');
       $confirmPassword = (string)($_POST['confirm_password'] ?? '');
 
       $registerOld = [
         'full_name' => $fullName,
         'email' => $email,
+        'phone_country_code' => $phoneCountryCode,
+        'phone_number' => $phoneNumber,
       ];
 
       if ($fullName === '') {
@@ -1849,76 +1906,93 @@ if ($page === 'register' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
       } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $error = 'Valid email is required.';
       } elseif (strlen($password) < 8) {
-        $error = 'Password must be at least 8 characters.';
-      } elseif (!hash_equals($password, $confirmPassword)) {
-        $error = 'Password confirmation does not match.';
-      } elseif (user_email_exists($pdo, $email)) {
-        $error = 'This email is already registered.';
-      } else {
-        $tenantId = resolve_registration_tenant_id($pdo, $config);
-        if (!$tenantId) {
-          $error = 'No active tenant is available for registration.';
+        } elseif (!phone_country_codes_ready($pdo)) {
+          $error = 'Phone country code list is not ready. Run latest migrations.';
         } else {
-          $role = trim((string)($config['registration']['default_role'] ?? 'student'));
-          if (!in_array($role, ['student', 'admin', 'manager', 'it'], true)) {
-            $role = 'student';
+          $phoneValidation = phone_validate_input($pdo, $phoneCountryCode, $phoneNumber, true);
+          if (!($phoneValidation['ok'] ?? false)) {
+            $error = (string)($phoneValidation['error'] ?? 'Invalid phone details.');
           }
+        }
 
-          $passwordHash = password_hash($password, PASSWORD_DEFAULT);
-          if ($passwordHash === false) {
-            $error = 'Unable to process registration password.';
+        if ($error === '') {
+        if (strlen($password) < 8) {
+          $error = 'Password must be at least 8 characters.';
+        } elseif (!hash_equals($password, $confirmPassword)) {
+          $error = 'Password confirmation does not match.';
+        } elseif (user_email_exists($pdo, $email)) {
+          $error = 'This email is already registered.';
+        } else {
+          $tenantId = resolve_registration_tenant_id($pdo, $config);
+          if (!$tenantId) {
+            $error = 'No active tenant is available for registration.';
           } else {
-            $emailVerifiedAt = email_verification_enabled($config) ? null : date('Y-m-d H:i:s');
-            $insert = $pdo->prepare('INSERT INTO users (tenant_id, full_name, email, password_hash, role, is_active, email_verified_at) VALUES (?, ?, ?, ?, ?, 1, ?)');
-            $insert->execute([
-              $tenantId,
-              $fullName,
-              $email,
-              $passwordHash,
-              $role,
-              $emailVerifiedAt,
-            ]);
+            $role = trim((string)($config['registration']['default_role'] ?? 'student'));
+            if (!in_array($role, ['student', 'admin', 'manager', 'it'], true)) {
+              $role = 'student';
+            }
 
-            $newUserId = (int)$pdo->lastInsertId();
-            $userStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, password_hash, email_verified_at FROM users WHERE id = ? LIMIT 1');
-            $userStmt->execute([$newUserId]);
-            $newUser = $userStmt->fetch();
-            if (!$newUser) {
-              $error = 'Registration succeeded but login bootstrap failed.';
+            $passwordHash = password_hash($password, PASSWORD_DEFAULT);
+            if ($passwordHash === false) {
+              $error = 'Unable to process registration password.';
             } else {
-              ensure_user_profile_exists($pdo, (int)$newUser['id'], (string)$newUser['full_name']);
+              $emailVerifiedAt = email_verification_enabled($config) ? null : date('Y-m-d H:i:s');
+              $insert = $pdo->prepare('INSERT INTO users (tenant_id, full_name, email, password_hash, role, is_active, email_verified_at) VALUES (?, ?, ?, ?, ?, 1, ?)');
+              $insert->execute([
+                $tenantId,
+                $fullName,
+                $email,
+                $passwordHash,
+                $role,
+                $emailVerifiedAt,
+              ]);
 
-              if (email_verification_enabled($config)) {
-                $_SESSION['pending_email_verification_user_id'] = (int)$newUser['id'];
-                $_SESSION['pending_email_verification_email'] = (string)$newUser['email'];
+              $newUserId = (int)$pdo->lastInsertId();
+              $userStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, password_hash, email_verified_at FROM users WHERE id = ? LIMIT 1');
+              $userStmt->execute([$newUserId]);
+              $newUser = $userStmt->fetch();
+              if (!$newUser) {
+                $error = 'Registration succeeded but login bootstrap failed.';
+              } else {
+                ensure_user_profile_exists($pdo, (int)$newUser['id'], (string)$newUser['full_name']);
 
-                $issue = email_verification_issue($pdo, $config, $newUser, app_route('verify_email'));
-                if (($issue['ok'] ?? false) === true) {
-                  if (($issue['method'] ?? 'code') === 'code') {
-                    $message = 'Account created. Enter the verification code sent to your email.';
-                  } else {
-                    $message = 'Account created. Use the verification link sent to your email.';
-                  }
-                } else {
-                  $reason = trim((string)($issue['reason'] ?? ''));
-                  if ($reason !== '') {
-                    $error = 'Account created, but verification email could not be sent: ' . $reason . '. Use resend below.';
-                  } else {
-                    $error = 'Account created, but verification email could not be sent yet. Use resend below.';
-                  }
+                if (isset($phoneValidation) && ($phoneValidation['ok'] ?? false)) {
+                  $normalizedPhone = (string)($phoneValidation['number'] ?? '');
+                  $updateProfile = $pdo->prepare('UPDATE user_profiles SET phone_country_code = ?, phone_number = ? WHERE user_id = ?');
+                  $updateProfile->execute([$phoneCountryCode, $normalizedPhone, (int)$newUser['id']]);
                 }
 
-                $page = 'verify_email';
-              } else {
-                set_user_session($newUser);
-                header('Location: ' . app_route('dashboard'));
-                exit;
+                if (email_verification_enabled($config)) {
+                  $_SESSION['pending_email_verification_user_id'] = (int)$newUser['id'];
+                  $_SESSION['pending_email_verification_email'] = (string)$newUser['email'];
+
+                  $issue = email_verification_issue($pdo, $config, $newUser, app_route('verify_email'));
+                  if (($issue['ok'] ?? false) === true) {
+                    if (($issue['method'] ?? 'code') === 'code') {
+                      $message = 'Account created. Enter the verification code sent to your email.';
+                    } else {
+                      $message = 'Account created. Use the verification link sent to your email.';
+                    }
+                  } else {
+                    $reason = trim((string)($issue['reason'] ?? ''));
+                    if ($reason !== '') {
+                      $error = 'Account created, but verification email could not be sent: ' . $reason . '. Use resend below.';
+                    } else {
+                      $error = 'Account created, but verification email could not be sent yet. Use resend below.';
+                    }
+                  }
+
+                  $page = 'verify_email';
+                } else {
+                  set_user_session($newUser);
+                  header('Location: ' . app_route('dashboard'));
+                  exit;
+                }
               }
             }
           }
         }
-      }
-
+        }
       if ($page !== 'verify_email') {
         $page = 'register';
       }
@@ -2376,6 +2450,68 @@ if ($page === 'identity_diagnostics' && $pdo) {
   }
 }
 
+if ($page === 'phone_codes' && $pdo) {
+  $actor = require_login();
+  if ((string)$actor['role'] !== 'it') {
+    http_response_code(403);
+    exit('Forbidden');
+  }
+}
+
+if ($page === 'phone_codes_save' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
+  require_csrf();
+  $actor = require_login();
+  if ((string)$actor['role'] !== 'it') {
+    http_response_code(403);
+    exit('Forbidden');
+  }
+
+  if (!phone_country_codes_ready($pdo)) {
+    $error = 'Phone country code table is not ready. Run latest migrations.';
+    $page = 'phone_codes';
+  } else {
+    $phoneCodeId = (int)($_POST['phone_code_id'] ?? 0);
+    $iso2 = strtoupper(trim((string)($_POST['iso2'] ?? '')));
+    $countryName = trim((string)($_POST['country_name'] ?? ''));
+    $dialCode = trim((string)($_POST['dial_code'] ?? ''));
+    $minLength = max(4, min(15, (int)($_POST['min_length'] ?? 6)));
+    $maxLength = max($minLength, min(15, (int)($_POST['max_length'] ?? 12)));
+    $regexPattern = trim((string)($_POST['regex_pattern'] ?? ''));
+    $isDefault = isset($_POST['is_default']) ? 1 : 0;
+    $isActive = isset($_POST['is_active']) ? 1 : 0;
+    $sortOrder = max(0, (int)($_POST['sort_order'] ?? 100));
+
+    if (!preg_match('/^[A-Z]{2}$/', $iso2)) {
+      $error = 'ISO2 must be exactly 2 letters.';
+    } elseif ($countryName === '') {
+      $error = 'Country name is required.';
+    } elseif (!preg_match('/^\+[0-9]{1,4}$/', $dialCode)) {
+      $error = 'Dial code must be in +NNN format.';
+    } else {
+      if ($regexPattern === '') {
+        $regexPattern = '/^[0-9]{' . $minLength . ',' . $maxLength . '}$/';
+      }
+
+      if ($phoneCodeId > 0) {
+        $stmt = $pdo->prepare('UPDATE phone_country_codes SET iso2 = ?, country_name = ?, dial_code = ?, min_length = ?, max_length = ?, regex_pattern = ?, is_default = ?, is_active = ?, sort_order = ? WHERE id = ?');
+        $stmt->execute([$iso2, $countryName, $dialCode, $minLength, $maxLength, $regexPattern, $isDefault, $isActive, $sortOrder, $phoneCodeId]);
+      } else {
+        $stmt = $pdo->prepare('INSERT INTO phone_country_codes (iso2, country_name, dial_code, min_length, max_length, regex_pattern, is_default, is_active, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+        $stmt->execute([$iso2, $countryName, $dialCode, $minLength, $maxLength, $regexPattern, $isDefault, $isActive, $sortOrder]);
+      }
+
+      if ($isDefault === 1) {
+        $currentId = $phoneCodeId > 0 ? $phoneCodeId : (int)$pdo->lastInsertId();
+        $clearStmt = $pdo->prepare('UPDATE phone_country_codes SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END');
+        $clearStmt->execute([$currentId]);
+      }
+
+      $message = 'Phone country code saved.';
+      $page = 'phone_codes';
+    }
+  }
+}
+
 if ($page === 'form_builder_save' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
   require_csrf();
   $actor = require_login();
@@ -2565,6 +2701,27 @@ if ($page === 'form_builder' && $pdo) {
   }
 }
 
+if ($page === 'phone_codes' && $pdo) {
+  $actor = require_login();
+  if ((string)$actor['role'] !== 'it') {
+    http_response_code(403);
+    exit('Forbidden');
+  }
+
+  if (phone_country_codes_ready($pdo)) {
+    $phoneCodeRows = phone_country_code_rows($pdo, false);
+    $editId = (int)($_GET['edit_phone_code_id'] ?? 0);
+    if ($editId > 0) {
+      foreach ($phoneCodeRows as $row) {
+        if ((int)($row['id'] ?? 0) === $editId) {
+          $phoneCodeEdit = $row;
+          break;
+        }
+      }
+    }
+  }
+}
+
 if ($page === 'profile' && $pdo) {
   $actor = require_login();
   $targetUserId = (int)($_GET['user_id'] ?? $actor['id']);
@@ -2698,6 +2855,39 @@ if ($page === 'apply' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
           break;
         }
         $answers[$fieldName] = $clean;
+        continue;
+      }
+
+      if ($fieldType === 'phone') {
+        $rawPhone = $answersInput[$fieldName] ?? [];
+        $countryCode = trim((string)(is_array($rawPhone) ? ($rawPhone['country_code'] ?? '') : ''));
+        $phoneNumber = trim((string)(is_array($rawPhone) ? ($rawPhone['number'] ?? '') : ''));
+        $requiredPhone = (bool)($field['required'] ?? false);
+
+        $phoneValidation = phone_validate_input($pdo, $countryCode, $phoneNumber, $requiredPhone);
+        if (!($phoneValidation['ok'] ?? false)) {
+          $error = (string)($phoneValidation['error'] ?? 'Invalid phone number.');
+          $page = 'dashboard';
+          break;
+        }
+
+        $normalizedNumber = (string)($phoneValidation['number'] ?? '');
+        if ($countryCode === '' && $normalizedNumber === '') {
+          $answers[$fieldName] = [
+            'country_code' => '',
+            'number' => '',
+            'full' => '',
+            'country_iso2' => '',
+          ];
+        } else {
+          $country = is_array($phoneValidation['country'] ?? null) ? $phoneValidation['country'] : [];
+          $answers[$fieldName] = [
+            'country_code' => $countryCode,
+            'number' => $normalizedNumber,
+            'full' => (string)($phoneValidation['combined'] ?? ($countryCode . $normalizedNumber)),
+            'country_iso2' => strtoupper(trim((string)($country['iso2'] ?? ''))),
+          ];
+        }
         continue;
       }
 
@@ -3214,6 +3404,9 @@ $user = current_user();
           <?php if (in_array((string)$user['role'], ['admin', 'it'], true)): ?>
             <a href="<?= h(app_route('form_builder')) ?>">Form Builder</a>
             <a href="<?= h(app_route('identity_diagnostics')) ?>">Identity Diagnostics</a>
+            <?php if ((string)$user['role'] === 'it'): ?>
+              <a href="<?= h(app_route('phone_codes')) ?>">Phone Codes</a>
+            <?php endif; ?>
           <?php endif; ?>
           <a href="<?= h(app_route('logout')) ?>">Logout</a>
         <?php else: ?>
@@ -3345,12 +3538,34 @@ $user = current_user();
         <p>Registration is currently disabled.</p>
         <a class="btn" href="<?= h(app_route('login')) ?>">Back to Login</a>
       <?php else: ?>
+        <?php
+          $registerPhoneCountries = [];
+          $registerDefaultCode = '+90';
+          if ($pdo && phone_country_codes_ready($pdo)) {
+            $registerPhoneCountries = phone_country_code_rows($pdo, true);
+            $registerDefaultCode = phone_default_country_code($pdo, '+90');
+          }
+          $registerSelectedCode = trim((string)($registerOld['phone_country_code'] ?? $registerDefaultCode));
+        ?>
         <form method="post" action="<?= h(app_route('register')) ?>">
           <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
           <label>Full Name</label>
           <input name="full_name" type="text" value="<?= h((string)$registerOld['full_name']) ?>" required>
           <label>Email</label>
           <input name="email" type="email" value="<?= h((string)$registerOld['email']) ?>" required>
+          <label>Phone Country Code</label>
+          <select name="phone_country_code" required>
+            <option value="">Select code...</option>
+            <?php foreach ($registerPhoneCountries as $country): ?>
+              <?php $dialCode = trim((string)($country['dial_code'] ?? '')); ?>
+              <?php if ($dialCode === '') { continue; } ?>
+              <option value="<?= h($dialCode) ?>" <?= $registerSelectedCode === $dialCode ? 'selected' : '' ?>>
+                <?= h($dialCode . ' - ' . (string)($country['country_name'] ?? 'Country')) ?>
+              </option>
+            <?php endforeach; ?>
+          </select>
+          <label>Phone Number</label>
+          <input name="phone_number" type="text" inputmode="numeric" value="<?= h((string)($registerOld['phone_number'] ?? '')) ?>" required>
           <label>Password</label>
           <input name="password" type="password" minlength="8" required>
           <label>Confirm Password</label>
@@ -3370,6 +3585,9 @@ $user = current_user();
     <?php elseif ($page === 'form_builder' && $user && $pdo): ?>
       <?php require __DIR__ . '/views/form_builder.php'; ?>
 
+    <?php elseif ($page === 'phone_codes' && $user && $pdo): ?>
+      <?php require __DIR__ . '/views/phone_codes.php'; ?>
+
     <?php elseif ($page === 'identity_diagnostics' && $user && $pdo): ?>
       <?php require __DIR__ . '/views/identity_diagnostics.php'; ?>
 
@@ -3388,6 +3606,15 @@ $user = current_user();
     }
 
     function getFieldValue(form, fieldName) {
+      const phoneCode = form.querySelector('[name="answers[' + fieldName + '][country_code]"]');
+      const phoneNumber = form.querySelector('[name="answers[' + fieldName + '][number]"]');
+      if (phoneCode || phoneNumber) {
+        return {
+          country_code: phoneCode ? phoneCode.value : '',
+          number: phoneNumber ? phoneNumber.value : '',
+        };
+      }
+
       const radios = form.querySelectorAll('input[type="radio"][name="answers[' + fieldName + ']"]');
       if (radios.length) {
         const checked = form.querySelector('input[type="radio"][name="answers[' + fieldName + ']"]:checked');
@@ -3410,6 +3637,19 @@ $user = current_user();
     }
 
     function setFieldValue(form, fieldName, value) {
+      const phoneCode = form.querySelector('[name="answers[' + fieldName + '][country_code]"]');
+      const phoneNumber = form.querySelector('[name="answers[' + fieldName + '][number]"]');
+      if (phoneCode || phoneNumber) {
+        const phoneValue = (value && typeof value === 'object') ? value : {};
+        if (phoneCode) {
+          phoneCode.value = String(phoneValue.country_code || '');
+        }
+        if (phoneNumber) {
+          phoneNumber.value = String(phoneValue.number || '');
+        }
+        return;
+      }
+
       const radios = form.querySelectorAll('input[type="radio"][name="answers[' + fieldName + ']"]');
       if (radios.length) {
         radios.forEach(function (r) {
@@ -3667,6 +3907,7 @@ $user = current_user();
         '<option value="number">number</option>' +
         '<option value="email">email</option>' +
         '<option value="date">date</option>' +
+        '<option value="phone">phone</option>' +
         '<option value="select">select</option>' +
         '<option value="radio">radio</option>' +
         '<option value="checkbox">checkbox</option>' +
@@ -3765,6 +4006,11 @@ $user = current_user();
         const field = { name: name, label: label, type: type, required: required };
         if (['text', 'textarea'].includes(type) && textRule) {
           field.text_rule = textRule;
+        }
+        if (type === 'phone') {
+          field.default_country_code = '+90';
+          field.allow_country_change = true;
+          field.validation_mode = 'country_strict';
         }
         if (['select', 'radio', 'checkbox'].includes(type)) {
           field.options = optionsRaw.split(',').map(function (opt) {

@@ -152,6 +152,7 @@ $scholarshipStatus = (string)($formBuilderScholarshipStatus ?? 'draft');
         '<option value="number">number</option>' +
         '<option value="email">email</option>' +
         '<option value="date">date</option>' +
+        '<option value="phone">phone</option>' +
         '<option value="select">select</option>' +
         '<option value="radio">radio</option>' +
         '<option value="checkbox">checkbox</option>' +
@@ -202,7 +203,7 @@ $scholarshipStatus = (string)($formBuilderScholarshipStatus ?? 'draft');
       return [];
     }
 
-    const allowedTypes = ['text', 'textarea', 'number', 'email', 'date', 'select', 'radio', 'checkbox'];
+    const allowedTypes = ['text', 'textarea', 'number', 'email', 'date', 'phone', 'select', 'radio', 'checkbox'];
     const out = [];
 
     raw.forEach(function (field, index) {
@@ -230,6 +231,11 @@ $scholarshipStatus = (string)($formBuilderScholarshipStatus ?? 'draft');
         if (allowedRules.includes(textRule)) {
           normalized.text_rule = textRule;
         }
+      }
+      if (type === 'phone') {
+        normalized.default_country_code = '+90';
+        normalized.allow_country_change = true;
+        normalized.validation_mode = 'country_strict';
       }
       if (['select', 'radio', 'checkbox'].includes(type)) {
         const options = Array.isArray(field.options)
@@ -259,6 +265,11 @@ $scholarshipStatus = (string)($formBuilderScholarshipStatus ?? 'draft');
       const textRule = row.querySelector('.fb-text-rule').value;
       if (['text', 'textarea'].includes(type) && textRule) {
         field.text_rule = textRule;
+      }
+      if (type === 'phone') {
+        field.default_country_code = '+90';
+        field.allow_country_change = true;
+        field.validation_mode = 'country_strict';
       }
       if (['select', 'radio', 'checkbox'].includes(type)) {
         field.options = parseOptions(row.querySelector('.fb-options').value);

@@ -99,6 +99,25 @@ function handle_profile_save_request(PDO $pdo, array $actor, array $post): array
     'address_text' => trim((string)($post['address_text'] ?? '')),
   ];
 
+  if (phone_country_codes_ready($pdo)) {
+    $phoneValidation = phone_validate_input(
+      $pdo,
+      (string)$profileFields['phone_country_code'],
+      (string)$profileFields['phone_number'],
+      false
+    );
+    if (!($phoneValidation['ok'] ?? false)) {
+      return [
+        'error' => (string)($phoneValidation['error'] ?? 'Invalid phone format.'),
+        'message' => '',
+        'page' => 'profile',
+        'target_user_id' => $targetUserId,
+      ];
+    }
+
+    $profileFields['phone_number'] = (string)($phoneValidation['number'] ?? '');
+  }
+
   if ($canControlTarget) {
     $profileFields['first_name'] = trim((string)($post['first_name'] ?? ''));
     $profileFields['middle_name'] = trim((string)($post['middle_name'] ?? ''));

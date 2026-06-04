@@ -2,6 +2,9 @@
 <p>Welcome, <?= h($user['name']) ?> (Tenant #<?= (int)$user['tenant_id'] ?>)</p>
 
 <?php if ($pdo): ?>
+  <?php
+    $applicationPhoneCountries = phone_country_codes_ready($pdo) ? phone_country_code_rows($pdo, true) : [];
+  ?>
   <?php if ($user['role'] === 'student'): ?>
     <?php
       $stmt = $pdo->prepare('SELECT id, title, description, form_schema_json FROM scholarships WHERE tenant_id = ? AND status = "published" ORDER BY id DESC');
@@ -19,7 +22,7 @@
             <?php
               $schema = normalize_form_schema(json_decode((string)$s['form_schema_json'], true));
               foreach ($schema as $field) {
-                  render_dynamic_field($field);
+                  render_dynamic_field($field, [], $applicationPhoneCountries);
               }
             ?>
             <br>

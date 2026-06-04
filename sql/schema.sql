@@ -169,6 +169,24 @@ CREATE TABLE IF NOT EXISTS rate_limit_events (
   INDEX idx_rate_limit_created_at (created_at)
 );
 
+CREATE TABLE IF NOT EXISTS phone_country_codes (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  iso2 CHAR(2) NOT NULL,
+  country_name VARCHAR(120) NOT NULL,
+  dial_code VARCHAR(8) NOT NULL,
+  min_length TINYINT UNSIGNED NOT NULL DEFAULT 6,
+  max_length TINYINT UNSIGNED NOT NULL DEFAULT 12,
+  regex_pattern VARCHAR(255) NOT NULL,
+  is_default TINYINT(1) NOT NULL DEFAULT 0,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  sort_order INT UNSIGNED NOT NULL DEFAULT 100,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_phone_codes_iso2 (iso2),
+  UNIQUE KEY uq_phone_codes_dial_code (dial_code),
+  INDEX idx_phone_codes_active_sort (is_active, sort_order, country_name)
+);
+
 CREATE TABLE IF NOT EXISTS user_profiles (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT UNSIGNED NOT NULL,

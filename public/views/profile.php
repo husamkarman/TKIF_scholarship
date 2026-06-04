@@ -17,6 +17,8 @@ if (!$targetUser):
 else:
   ensure_user_profile_exists($pdo, (int)$targetUser['id'], (string)$targetUser['full_name']);
   $profileData = get_user_profile($pdo, (int)$targetUser['id']) ?: [];
+  $profilePhoneCountries = phone_country_codes_ready($pdo) ? phone_country_code_rows($pdo, true) : [];
+  $profileDefaultCode = phone_country_codes_ready($pdo) ? phone_default_country_code($pdo, '+90') : '+90';
   $profileComplete = is_profile_complete($targetUser, $profileData);
   $missingFields = profile_missing_required_fields($targetUser, $profileData);
   $canControlTarget = can_control_role($user, (string)$targetUser['role']);
@@ -195,9 +197,22 @@ else:
       <div class="card">
         <h3>Contact Information</h3>
         <label>Phone Country Code <?= lock_badge_html(!$canEditCurrentProfile) ?></label>
-        <input name="phone_country_code" value="<?= h((string)($profileData['phone_country_code'] ?? '')) ?>" <?= $canEditCurrentProfile ? '' : 'readonly' ?>>
+        <select name="phone_country_code" <?= $canEditCurrentProfile ? '' : 'disabled' ?>>
+          <?php $selectedProfileCode = trim((string)($profileData['phone_country_code'] ?? $profileDefaultCode)); ?>
+          <option value="">Select code...</option>
+          <?php foreach ($profilePhoneCountries as $country): ?>
+            <?php $dialCode = trim((string)($country['dial_code'] ?? '')); ?>
+            <?php if ($dialCode === '') { continue; } ?>
+            <option value="<?= h($dialCode) ?>" <?= $selectedProfileCode === $dialCode ? 'selected' : '' ?>>
+              <?= h($dialCode . ' - ' . (string)($country['country_name'] ?? 'Country')) ?>
+            </option>
+          <?php endforeach; ?>
+        </select>
+        <?php if (!$canEditCurrentProfile): ?>
+          <input type="hidden" name="phone_country_code" value="<?= h($selectedProfileCode) ?>">
+        <?php endif; ?>
         <label>Phone Number <?= lock_badge_html(!$canEditCurrentProfile) ?></label>
-        <input name="phone_number" value="<?= h((string)($profileData['phone_number'] ?? '')) ?>" <?= $canEditCurrentProfile ? '' : 'readonly' ?>>
+        <input name="phone_number" inputmode="numeric" value="<?= h((string)($profileData['phone_number'] ?? '')) ?>" <?= $canEditCurrentProfile ? '' : 'readonly' ?>>
         <label>WhatsApp Number <?= lock_badge_html(!$canEditCurrentProfile) ?></label>
         <input name="whatsapp_number" value="<?= h((string)($profileData['whatsapp_number'] ?? '')) ?>" <?= $canEditCurrentProfile ? '' : 'readonly' ?>>
         <label>Secondary Email Address <?= lock_badge_html(!$canEditCurrentProfile) ?></label>

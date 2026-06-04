@@ -10,6 +10,7 @@ function form_builder_field_catalog(): array
     'number' => 'Numeric value',
     'email' => 'Email address',
     'date' => 'Date picker',
+    'phone' => 'Country code + phone number',
     'select' => 'Select dropdown',
     'radio' => 'Single choice radio',
     'checkbox' => 'Multi-choice checkbox',

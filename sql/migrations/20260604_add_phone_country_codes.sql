@@ -1,14 +1,25 @@
 USE tkif_scholarship;
 
-INSERT INTO tenants (name, code) VALUES ('TKIF Default Institution', 'TKIF001');
+CREATE TABLE IF NOT EXISTS phone_country_codes (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  iso2 CHAR(2) NOT NULL,
+  country_name VARCHAR(120) NOT NULL,
+  dial_code VARCHAR(8) NOT NULL,
+  min_length TINYINT UNSIGNED NOT NULL DEFAULT 6,
+  max_length TINYINT UNSIGNED NOT NULL DEFAULT 12,
+  regex_pattern VARCHAR(255) NOT NULL,
+  is_default TINYINT(1) NOT NULL DEFAULT 0,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  sort_order INT UNSIGNED NOT NULL DEFAULT 100,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_phone_codes_iso2 (iso2),
+  UNIQUE KEY uq_phone_codes_dial_code (dial_code),
+  INDEX idx_phone_codes_active_sort (is_active, sort_order, country_name)
+);
 
-INSERT INTO users (tenant_id, full_name, email, password_hash, role) VALUES
-(1, 'Student Demo', 'student@tkif.local', '$2y$12$.ppKye16LWJ8B4We9HfmSu3Q4ET52kBasp09Msa0KTfHYnTg37djG', 'student'),
-(1, 'Admin Demo', 'admin@tkif.local', '$2y$12$.ppKye16LWJ8B4We9HfmSu3Q4ET52kBasp09Msa0KTfHYnTg37djG', 'admin'),
-(1, 'Manager Demo', 'manager@tkif.local', '$2y$12$.ppKye16LWJ8B4We9HfmSu3Q4ET52kBasp09Msa0KTfHYnTg37djG', 'manager'),
-(1, 'IT Demo', 'it@tkif.local', '$2y$12$.ppKye16LWJ8B4We9HfmSu3Q4ET52kBasp09Msa0KTfHYnTg37djG', 'it');
-
-INSERT INTO phone_country_codes (iso2, country_name, dial_code, min_length, max_length, regex_pattern, is_default, is_active, sort_order) VALUES
+INSERT INTO phone_country_codes (iso2, country_name, dial_code, min_length, max_length, regex_pattern, is_default, is_active, sort_order)
+VALUES
 ('TR', 'Turkey', '+90', 10, 10, '/^[0-9]{10}$/', 1, 1, 1),
 ('AE', 'United Arab Emirates', '+971', 9, 9, '/^[0-9]{9}$/', 0, 1, 2),
 ('SA', 'Saudi Arabia', '+966', 9, 9, '/^[0-9]{9}$/', 0, 1, 3),
@@ -57,18 +68,14 @@ INSERT INTO phone_country_codes (iso2, country_name, dial_code, min_length, max_
 ('KE', 'Kenya', '+254', 9, 9, '/^[0-9]{9}$/', 0, 1, 46),
 ('MA', 'Morocco', '+212', 9, 9, '/^[0-9]{9}$/', 0, 1, 47),
 ('TN', 'Tunisia', '+216', 8, 8, '/^[0-9]{8}$/', 0, 1, 48),
-('DZ', 'Algeria', '+213', 9, 9, '/^[0-9]{9}$/', 0, 1, 49);
+('DZ', 'Algeria', '+213', 9, 9, '/^[0-9]{9}$/', 0, 1, 49)
+ON DUPLICATE KEY UPDATE
+  country_name = VALUES(country_name),
+  min_length = VALUES(min_length),
+  max_length = VALUES(max_length),
+  regex_pattern = VALUES(regex_pattern),
+  is_active = VALUES(is_active),
+  sort_order = VALUES(sort_order);
 
-INSERT INTO scholarships (tenant_id, title, description, status, form_schema_json, created_by)
-VALUES (
-  1,
-  'TKIF Merit Scholarship',
-  'Prototype scholarship for MVP testing',
-  'published',
-  JSON_ARRAY(
-    JSON_OBJECT('name','full_name','label','Full Name','type','text','required',true),
-    JSON_OBJECT('name','gpa','label','GPA','type','number','required',true),
-    JSON_OBJECT('name','statement','label','Motivation Statement','type','textarea','required',true)
-  ),
-  2
-);
+UPDATE phone_country_codes
+SET is_default = CASE WHEN dial_code = '+90' THEN 1 ELSE 0 END;
