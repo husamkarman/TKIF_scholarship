@@ -29,6 +29,62 @@ Approval gate behavior:
 - Resume payload must include `approved=true` to pass.
 - Any other value keeps the run in `Stop - Needs Changes`.
 
+## Step 3: Security Agent Integrated Pipeline
+
+Import `dashboard-automation-step3.json` for the third-stage automation path.
+
+What Step 3 adds:
+- Runs Security Review Agent after Validation Agent passes.
+- Blocks progression when security review fails (`pass=false`) or returns `blocked=true`.
+- Keeps human approval required before completing the step.
+
+Execution path in Step 3:
+- Code Creation Agent
+- Validation Agent
+- Security Review Agent
+- Human Approval Gate
+
+Step 3 approval gate:
+- Wait node webhook suffix: `dashboard-step3-approval`
+- Resume payload must include `approved=true`.
+
+Required environment variables:
+- `AGENT_ORCHESTRATOR_URL`
+
+Expected orchestrator endpoints used in Step 3:
+- `POST {AGENT_ORCHESTRATOR_URL}/code-creation`
+- `POST {AGENT_ORCHESTRATOR_URL}/validation`
+- `POST {AGENT_ORCHESTRATOR_URL}/security-review`
+
+## Step 4: UI Agent Integrated Pipeline
+
+Import `dashboard-automation-step4.json` for the fourth-stage automation path.
+
+What Step 4 adds:
+- Runs UI Error Fixing Agent after Security Review Agent passes.
+- Blocks progression when UI review fails (`pass=false`).
+- Keeps human approval required before step completion.
+
+Execution path in Step 4:
+- Code Creation Agent
+- Validation Agent
+- Security Review Agent
+- UI Error Fixing Agent
+- Human Approval Gate
+
+Step 4 approval gate:
+- Wait node webhook suffix: `dashboard-step4-approval`
+- Resume payload must include `approved=true`.
+
+Required environment variables:
+- `AGENT_ORCHESTRATOR_URL`
+
+Expected orchestrator endpoints used in Step 4:
+- `POST {AGENT_ORCHESTRATOR_URL}/code-creation`
+- `POST {AGENT_ORCHESTRATOR_URL}/validation`
+- `POST {AGENT_ORCHESTRATOR_URL}/security-review`
+- `POST {AGENT_ORCHESTRATOR_URL}/ui-fixing`
+
 Webhook endpoint expected by PHP app:
 - POST `/webhook/scholarship-submit`
 
