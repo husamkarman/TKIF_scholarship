@@ -72,6 +72,63 @@ CREATE TABLE IF NOT EXISTS applications (
   CONSTRAINT fk_app_student FOREIGN KEY (student_id) REFERENCES users(id)
 );
 
+CREATE TABLE IF NOT EXISTS forms (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  tenant_id BIGINT UNSIGNED NOT NULL,
+  title VARCHAR(200) NOT NULL,
+  description TEXT NULL,
+  status ENUM('draft','published','closed','archived') NOT NULL DEFAULT 'draft',
+  schema_json JSON NOT NULL,
+  settings_json JSON NULL,
+  theme_json JSON NULL,
+  legacy_scholarship_id BIGINT UNSIGNED NULL,
+  created_by BIGINT UNSIGNED NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_forms_legacy_scholarship (legacy_scholarship_id),
+  INDEX idx_forms_tenant_status_updated (tenant_id, status, updated_at),
+  CONSTRAINT fk_forms_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+  CONSTRAINT fk_forms_creator FOREIGN KEY (created_by) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS form_versions (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  form_id BIGINT UNSIGNED NOT NULL,
+  tenant_id BIGINT UNSIGNED NOT NULL,
+  version_no INT UNSIGNED NOT NULL,
+  status ENUM('draft','published','archived') NOT NULL DEFAULT 'draft',
+  schema_json JSON NOT NULL,
+  settings_json JSON NULL,
+  theme_json JSON NULL,
+  created_by BIGINT UNSIGNED NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_form_versions_form_version (form_id, version_no),
+  INDEX idx_form_versions_tenant_form (tenant_id, form_id, version_no),
+  CONSTRAINT fk_form_versions_form FOREIGN KEY (form_id) REFERENCES forms(id),
+  CONSTRAINT fk_form_versions_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+  CONSTRAINT fk_form_versions_creator FOREIGN KEY (created_by) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS form_submissions (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  form_id BIGINT UNSIGNED NOT NULL,
+  tenant_id BIGINT UNSIGNED NOT NULL,
+  submitted_by_user_id BIGINT UNSIGNED NULL,
+  snapshot_version_no INT UNSIGNED NULL,
+  answers_json JSON NOT NULL,
+  status ENUM('submitted','in_review','approved','rejected') NOT NULL DEFAULT 'submitted',
+  rejection_reason VARCHAR(255) NULL,
+  legacy_application_id BIGINT UNSIGNED NULL,
+  submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_form_submissions_legacy_application (legacy_application_id),
+  INDEX idx_form_submissions_form_status_time (form_id, status, submitted_at),
+  INDEX idx_form_submissions_tenant_user_time (tenant_id, submitted_by_user_id, submitted_at),
+  CONSTRAINT fk_form_submissions_form FOREIGN KEY (form_id) REFERENCES forms(id),
+  CONSTRAINT fk_form_submissions_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+  CONSTRAINT fk_form_submissions_user FOREIGN KEY (submitted_by_user_id) REFERENCES users(id)
+);
+
 CREATE TABLE IF NOT EXISTS scholarship_form_versions (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   scholarship_id BIGINT UNSIGNED NOT NULL,

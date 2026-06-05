@@ -3816,6 +3816,195 @@ if ($page === 'profile_export' && $pdo) {
   exit;
 }
 
+if ($page === 'form_responses_export' && $pdo) {
+  $actor = require_login();
+  if (!in_array((string)$actor['role'], ['admin', 'it'], true)) {
+    http_response_code(403);
+    exit('Forbidden');
+  }
+
+  $format = strtolower(trim((string)($_GET['format'] ?? 'csv')));
+  if (!in_array($format, ['csv', 'xls'], true)) {
+    $format = 'csv';
+  }
+
+  $formId = (int)($_GET['form_id'] ?? 0);
+  $legacyScholarshipId = (int)($_GET['scholarship_id'] ?? 0);
+
+  $formsReady = false;
+  try {
+    $formsReadyStmt = $pdo->query("SHOW TABLES LIKE 'forms'");
+    $formsReady = $formsReadyStmt !== false && (bool)$formsReadyStmt->fetchColumn();
+  } catch (Throwable) {
+    $formsReady = false;
+  }
+
+  if ($formsReady && $formId <= 0 && $legacyScholarshipId > 0) {
+    if ((string)$actor['role'] === 'it') {
+      $lookup = $pdo->prepare('SELECT id FROM forms WHERE legacy_scholarship_id = ? LIMIT 1');
+      $lookup->execute([$legacyScholarshipId]);
+    } else {
+      $lookup = $pdo->prepare('SELECT id FROM forms WHERE legacy_scholarship_id = ? AND tenant_id = ? LIMIT 1');
+      $lookup->execute([$legacyScholarshipId, (int)$actor['tenant_id']]);
+    }
+    $formId = (int)($lookup->fetchColumn() ?: 0);
+  }
+
+  if (!$formsReady && $legacyScholarshipId <= 0 && $formId > 0) {
+    $legacyScholarshipId = $formId;
+  }
+
+  if ($formsReady && $formId <= 0) {
+    http_response_code(422);
+    exit('Missing form_id (or scholarship_id mapped to a form).');
+  }
+  if (!$formsReady && $legacyScholarshipId <= 0) {
+    http_response_code(422);
+    exit('Missing scholarship_id for legacy export.');
+  }
+
+  $headers = ['submission_id', 'form_id', 'form_title', 'student_id', 'student_register_id', 'student_name', 'student_email', 'status', 'rejection_reason', 'submitted_at', 'updated_at', 'answers_json'];
+  $rows = [];
+  $fileEntityId = 0;
+
+  if ($formsReady) {
+    if ((string)$actor['role'] === 'it') {
+      $formMetaStmt = $pdo->prepare('SELECT id, title FROM forms WHERE id = ? LIMIT 1');
+      $formMetaStmt->execute([$formId]);
+    } else {
+      $formMetaStmt = $pdo->prepare('SELECT id, title FROM forms WHERE id = ? AND tenant_id = ? LIMIT 1');
+      $formMetaStmt->execute([$formId, (int)$actor['tenant_id']]);
+    }
+    $formMeta = $formMetaStmt->fetch();
+    if (!$formMeta) {
+      http_response_code(404);
+      exit('Form not found');
+    }
+    $fileEntityId = (int)$formMeta['id'];
+
+    $sql = 'SELECT
+              fs.id AS submission_id,
+              f.id AS form_id,
+              f.title AS form_title,
+              u.id AS student_id,
+              u.register_id AS student_register_id,
+              u.full_name AS student_name,
+              u.email AS student_email,
+              fs.status,
+              fs.rejection_reason,
+              fs.submitted_at,
+              fs.updated_at,
+              fs.answers_json
+            FROM form_submissions fs
+            INNER JOIN forms f ON f.id = fs.form_id
+            LEFT JOIN users u ON u.id = fs.submitted_by_user_id
+            WHERE fs.form_id = ?';
+    $params = [$formId];
+    if ((string)$actor['role'] !== 'it') {
+      $sql .= ' AND fs.tenant_id = ?';
+      $params[] = (int)$actor['tenant_id'];
+    }
+    $sql .= ' ORDER BY fs.id DESC LIMIT 10000';
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $rows = $stmt->fetchAll();
+  } else {
+    if ((string)$actor['role'] === 'it') {
+      $formMetaStmt = $pdo->prepare('SELECT id, title FROM scholarships WHERE id = ? LIMIT 1');
+      $formMetaStmt->execute([$legacyScholarshipId]);
+    } else {
+      $formMetaStmt = $pdo->prepare('SELECT id, title FROM scholarships WHERE id = ? AND tenant_id = ? LIMIT 1');
+      $formMetaStmt->execute([$legacyScholarshipId, (int)$actor['tenant_id']]);
+    }
+    $formMeta = $formMetaStmt->fetch();
+    if (!$formMeta) {
+      http_response_code(404);
+      exit('Scholarship form not found');
+    }
+    $fileEntityId = (int)$formMeta['id'];
+
+    $sql = 'SELECT
+              a.id AS submission_id,
+              s.id AS form_id,
+              s.title AS form_title,
+              u.id AS student_id,
+              u.register_id AS student_register_id,
+              u.full_name AS student_name,
+              u.email AS student_email,
+              a.status,
+              a.rejection_reason,
+              a.created_at AS submitted_at,
+              a.updated_at,
+              a.answers_json
+            FROM applications a
+            INNER JOIN scholarships s ON s.id = a.scholarship_id
+            LEFT JOIN users u ON u.id = a.student_id
+            WHERE a.scholarship_id = ?';
+    $params = [$legacyScholarshipId];
+    if ((string)$actor['role'] !== 'it') {
+      $sql .= ' AND a.tenant_id = ?';
+      $params[] = (int)$actor['tenant_id'];
+    }
+    $sql .= ' ORDER BY a.id DESC LIMIT 10000';
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $rows = $stmt->fetchAll();
+  }
+
+  $filenameBase = 'form_responses_' . (string)$fileEntityId . '_' . date('Ymd_His');
+
+  if ($format === 'xls') {
+    header('Content-Type: application/vnd.ms-excel; charset=UTF-8');
+    header('Content-Disposition: attachment; filename="' . $filenameBase . '.xls"');
+    echo "\xEF\xBB\xBF";
+    echo '<table border="1"><tr>';
+    foreach ($headers as $headerLabel) {
+      echo '<th>' . h($headerLabel) . '</th>';
+    }
+    echo '</tr>';
+    foreach ($rows as $row) {
+      echo '<tr>';
+      foreach ($headers as $key) {
+        echo '<td>' . h((string)($row[$key] ?? '')) . '</td>';
+      }
+      echo '</tr>';
+    }
+    echo '</table>';
+    exit;
+  }
+
+  header('Content-Type: text/csv; charset=UTF-8');
+  header('Content-Disposition: attachment; filename="' . $filenameBase . '.csv"');
+  $out = fopen('php://output', 'wb');
+  if ($out === false) {
+    http_response_code(500);
+    exit('Unable to export CSV');
+  }
+
+  fputcsv($out, $headers, ',', '"', '\\');
+  foreach ($rows as $row) {
+    fputcsv($out, [
+      csv_safe_cell((string)($row['submission_id'] ?? '')),
+      csv_safe_cell((string)($row['form_id'] ?? '')),
+      csv_safe_cell((string)($row['form_title'] ?? '')),
+      csv_safe_cell((string)($row['student_id'] ?? '')),
+      csv_safe_cell((string)($row['student_register_id'] ?? '')),
+      csv_safe_cell((string)($row['student_name'] ?? '')),
+      csv_safe_cell((string)($row['student_email'] ?? '')),
+      csv_safe_cell((string)($row['status'] ?? '')),
+      csv_safe_cell((string)($row['rejection_reason'] ?? '')),
+      csv_safe_cell((string)($row['submitted_at'] ?? '')),
+      csv_safe_cell((string)($row['updated_at'] ?? '')),
+      csv_safe_cell((string)($row['answers_json'] ?? '')),
+    ], ',', '"', '\\');
+  }
+
+  fclose($out);
+  exit;
+}
+
 if ($page === 'identity_diagnostics_export' && $pdo) {
   $actor = require_login();
   if (!in_array((string)$actor['role'], ['admin', 'it'], true)) {

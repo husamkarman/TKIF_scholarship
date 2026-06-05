@@ -84,6 +84,12 @@ $loadTemplateButtonLabel = $builderType === 'scholarship' ? 'Load Scholarship' :
       <button class="btn" type="submit" form="form-builder-save-form" id="fb_save_draft_top">Save Draft</button>
       <button class="btn primary" type="submit" form="form-builder-save-form" id="fb_publish_top">Publish</button>
     </p>
+    <?php if ($selectedScholarshipId > 0): ?>
+      <p style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; margin-bottom:0;">
+        <a class="btn" href="<?= h(app_route('form_responses_export') . '&format=csv&scholarship_id=' . (int)$selectedScholarshipId) ?>">Export Responses CSV</a>
+        <a class="btn" href="<?= h(app_route('form_responses_export') . '&format=xls&scholarship_id=' . (int)$selectedScholarshipId) ?>">Export Responses Excel</a>
+      </p>
+    <?php endif; ?>
   </div>
 
   <?php if ($builderType === 'scholarship'): ?>
