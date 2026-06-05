@@ -497,6 +497,203 @@
       <?php endif; ?>
 
       <?php if ($isAdmin): ?>
+      <?php
+        $adminRoleCountStmt = $pdo->prepare(
+          'SELECT
+             SUM(CASE WHEN role = "admin" THEN 1 ELSE 0 END) AS admin_count,
+             SUM(CASE WHEN role = "manager" THEN 1 ELSE 0 END) AS manager_count,
+             SUM(CASE WHEN role = "student" THEN 1 ELSE 0 END) AS student_count,
+             SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active_count,
+             SUM(CASE WHEN is_active = 0 THEN 1 ELSE 0 END) AS inactive_count,
+             SUM(CASE WHEN email_verified_at IS NOT NULL THEN 1 ELSE 0 END) AS verified_count,
+             SUM(CASE WHEN email_verified_at IS NULL THEN 1 ELSE 0 END) AS unverified_count,
+             COUNT(*) AS total_count
+           FROM users
+           WHERE tenant_id = ?'
+        );
+        $adminRoleCountStmt->execute([(int)$user['tenant_id']]);
+        $adminRoleCounts = $adminRoleCountStmt->fetch() ?: [];
+
+        $adminBlacklistedCount = 0;
+        if ($usersBlacklistReady) {
+          $adminBlacklistCountStmt = $pdo->prepare('SELECT COUNT(*) FROM users WHERE tenant_id = ? AND blacklist = 1');
+          $adminBlacklistCountStmt->execute([(int)$user['tenant_id']]);
+          $adminBlacklistedCount = (int)$adminBlacklistCountStmt->fetchColumn();
+        }
+
+        $adminUsersSql = $usersBlacklistReady
+          ? 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, blacklist, email_verified_at, created_at FROM users WHERE tenant_id = ? AND role != "it" ORDER BY id DESC LIMIT 300'
+          : 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users WHERE tenant_id = ? AND role != "it" ORDER BY id DESC LIMIT 300';
+        $adminUsersStmt = $pdo->prepare($adminUsersSql);
+        $adminUsersStmt->execute([(int)$user['tenant_id']]);
+        $adminUsers = array_values(array_filter($adminUsersStmt->fetchAll(), static function (array $row) use ($user): bool {
+          return can_access_profile_target($user, $row);
+        }));
+        $adminAssignableRoles = assignable_roles_for_actor($user);
+
+        $schKpiStmt = $pdo->prepare(
+          'SELECT
+             SUM(CASE WHEN status = "published" THEN 1 ELSE 0 END) AS published_count,
+             SUM(CASE WHEN status = "closed"    THEN 1 ELSE 0 END) AS closed_count,
+             SUM(CASE WHEN status = "draft"     THEN 1 ELSE 0 END) AS draft_count,
+             COUNT(*) AS total_count
+           FROM scholarships
+           WHERE tenant_id = ?'
+        );
+        $schKpiStmt->execute([(int)$user['tenant_id']]);
+        $schKpis = $schKpiStmt->fetch() ?: [];
+
+        $allScholarshipsStmt = $pdo->prepare(
+          'SELECT s.id, s.title, s.description, s.status, s.created_at,
+                  u.full_name AS created_by_name,
+                  COUNT(DISTINCT a.id) AS application_count
+           FROM scholarships s
+           LEFT JOIN users u ON u.id = s.created_by
+           LEFT JOIN applications a ON a.scholarship_id = s.id
+           WHERE s.tenant_id = ?
+           GROUP BY s.id
+           ORDER BY s.id DESC'
+        );
+        $allScholarshipsStmt->execute([(int)$user['tenant_id']]);
+        $allScholarships = $allScholarshipsStmt->fetchAll();
+      ?>
+
+      <div class="card" style="margin-bottom: 14px;">
+        <h3>Admin Operations Center</h3>
+        <p>Tenant-scoped control panel for user access, scholarship status, and profile actions.</p>
+        <div class="grid">
+          <div class="card"><strong><?= (int)($adminRoleCounts['total_count'] ?? 0) ?></strong><br><span class="muted">Tenant Users</span></div>
+          <div class="card"><strong><?= (int)($adminRoleCounts['admin_count'] ?? 0) ?></strong><br><span class="muted">Admin Users</span></div>
+          <div class="card"><strong><?= (int)($adminRoleCounts['manager_count'] ?? 0) ?></strong><br><span class="muted">Management Users</span></div>
+          <div class="card"><strong><?= (int)($adminRoleCounts['student_count'] ?? 0) ?></strong><br><span class="muted">Student Users</span></div>
+          <div class="card"><strong><?= (int)($adminRoleCounts['active_count'] ?? 0) ?></strong><br><span class="muted">Active Accounts</span></div>
+          <div class="card"><strong><?= (int)($adminRoleCounts['inactive_count'] ?? 0) ?></strong><br><span class="muted">Disabled Accounts</span></div>
+          <div class="card"><strong><?= (int)($adminRoleCounts['verified_count'] ?? 0) ?></strong><br><span class="muted">Email Verified</span></div>
+          <div class="card"><strong><?= (int)($adminRoleCounts['unverified_count'] ?? 0) ?></strong><br><span class="muted">Email Unverified</span></div>
+          <div class="card"><strong><?= (int)$adminBlacklistedCount ?></strong><br><span class="muted">Blacklisted Users</span></div>
+          <div class="card"><strong><?= (int)($schKpis['published_count'] ?? 0) ?></strong><br><span class="muted">Active Scholarships</span></div>
+          <div class="card"><strong><?= (int)($schKpis['closed_count'] ?? 0) ?></strong><br><span class="muted">Closed Scholarships</span></div>
+          <div class="card"><strong><?= (int)($schKpis['draft_count'] ?? 0) ?></strong><br><span class="muted">Draft Scholarships</span></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom: 14px;">
+        <h3>Tenant User Management</h3>
+        <?php if ($adminUsers === []): ?>
+          <p>No manageable users found in this tenant.</p>
+        <?php else: ?>
+          <table class="table">
+            <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Email Verify</th><th>Role</th><th>Status</th><th>Blacklist</th><th>User Update</th><th>Profile</th></tr></thead>
+            <tbody>
+            <?php foreach ($adminUsers as $adminUser): ?>
+              <?php
+                $adminUserId = (int)($adminUser['id'] ?? 0);
+                $adminRole   = (string)($adminUser['role'] ?? 'student');
+                $adminActive = (int)($adminUser['is_active'] ?? 1) === 1;
+                $adminFlag   = (int)($adminUser['blacklist'] ?? 0) === 1;
+                $adminEmailVerified = trim((string)($adminUser['email_verified_at'] ?? '')) !== '';
+              ?>
+              <tr>
+                <td><?= (int)($adminUser['register_id'] ?? $adminUserId) ?></td>
+                <td><a href="<?= h(app_route('profile') . '&user_id=' . $adminUserId) ?>"><?= h((string)($adminUser['full_name'] ?? '')) ?></a></td>
+                <td><?= h((string)($adminUser['email'] ?? '')) ?></td>
+                <td><?= $adminEmailVerified ? 'verified' : 'unverified' ?></td>
+                <td><?= h($adminRole) ?></td>
+                <td><?= $adminActive ? 'active' : 'disabled' ?></td>
+                <td><?= $usersBlacklistReady ? ($adminFlag ? 'blacklist (1)' : 'whitelist (0)') : 'n/a' ?></td>
+                <td>
+                  <form method="post" action="<?= h(app_route('user_role_status_update')) ?>">
+                    <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+                    <input type="hidden" name="user_id" value="<?= $adminUserId ?>">
+                    <select name="role" required>
+                      <?php foreach ($adminAssignableRoles as $assignRole): ?>
+                        <option value="<?= h($assignRole) ?>" <?= $adminRole === $assignRole ? 'selected' : '' ?>><?= h($assignRole) ?></option>
+                      <?php endforeach; ?>
+                    </select>
+                    <select name="is_active" required>
+                      <option value="1" <?= $adminActive ? 'selected' : '' ?>>active</option>
+                      <option value="0" <?= !$adminActive ? 'selected' : '' ?>>disabled</option>
+                    </select>
+                    <select name="email_verification_status" required>
+                      <option value="verified" <?= $adminEmailVerified ? 'selected' : '' ?>>verified</option>
+                      <option value="unverified" <?= !$adminEmailVerified ? 'selected' : '' ?>>unverified</option>
+                    </select>
+                    <button class="btn" type="submit">Update</button>
+                  </form>
+                </td>
+                <td><a class="btn" href="<?= h(app_route('profile') . '&user_id=' . $adminUserId) ?>">Open Profile</a></td>
+              </tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+        <?php endif; ?>
+      </div>
+
+      <div class="card" style="margin-bottom: 14px;">
+        <h3>Scholarships</h3>
+        <p>All scholarships for this tenant. Use the Form Builder below to create or edit versions.</p>
+        <?php if ($allScholarships === []): ?>
+          <p>No scholarships found for this tenant.</p>
+        <?php else: ?>
+          <table class="table">
+            <thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Applications</th><th>Created By</th><th>Created</th><th>Actions</th></tr></thead>
+            <tbody>
+            <?php foreach ($allScholarships as $sch): ?>
+              <tr>
+                <td><?= (int)$sch['id'] ?></td>
+                <td><?= h((string)$sch['title']) ?></td>
+                <td>
+                  <?php
+                    $schStatusClass = match((string)$sch['status']) {
+                      'published' => 'color:#1a7f37',
+                      'closed'    => 'color:#cf222e',
+                      default     => 'color:#6e7781',
+                    };
+                  ?>
+                  <span class="badge" style="<?= $schStatusClass ?>"><?= h((string)$sch['status']) ?></span>
+                </td>
+                <td><?= (int)$sch['application_count'] ?></td>
+                <td><?= h((string)($sch['created_by_name'] ?? '')) ?></td>
+                <td><?= h((string)$sch['created_at']) ?></td>
+                <td>
+                  <button class="btn load-scholarship-btn" type="button"
+                    data-id="<?= (int)$sch['id'] ?>"
+                    data-title="<?= h((string)$sch['title']) ?>"
+                    data-description="<?= h((string)($sch['description'] ?? '')) ?>"
+                    data-status="<?= h((string)$sch['status']) ?>"
+                    data-schema="<?= h((string)($sch['form_schema_json'] ?? '[]')) ?>">
+                    Edit / New Version
+                  </button>
+                  <?php if ((string)$sch['status'] !== 'published'): ?>
+                  <form method="post" action="<?= h(app_route('create_scholarship')) ?>" style="display:inline">
+                    <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+                    <input type="hidden" name="scholarship_id" value="<?= (int)$sch['id'] ?>">
+                    <input type="hidden" name="title" value="<?= h((string)$sch['title']) ?>">
+                    <input type="hidden" name="description" value="<?= h((string)($sch['description'] ?? '')) ?>">
+                    <input type="hidden" name="status" value="published">
+                    <input type="hidden" name="form_schema_json" value="<?= h((string)($sch['form_schema_json'] ?? '[]')) ?>">
+                    <input type="hidden" name="form_settings_json" value="{}">
+                    <button class="btn" type="submit">Publish</button>
+                  </form>
+                  <?php elseif ((string)$sch['status'] === 'published'): ?>
+                  <form method="post" action="<?= h(app_route('create_scholarship')) ?>" style="display:inline">
+                    <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+                    <input type="hidden" name="scholarship_id" value="<?= (int)$sch['id'] ?>">
+                    <input type="hidden" name="title" value="<?= h((string)$sch['title']) ?>">
+                    <input type="hidden" name="description" value="<?= h((string)($sch['description'] ?? '')) ?>">
+                    <input type="hidden" name="status" value="closed">
+                    <input type="hidden" name="form_schema_json" value="<?= h((string)($sch['form_schema_json'] ?? '[]')) ?>">
+                    <input type="hidden" name="form_settings_json" value="{}">
+                    <button class="btn" type="submit">Close</button>
+                  </form>
+                  <?php endif; ?>
+                </td>
+              </tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+        <?php endif; ?>
+      </div>
 
       <div class="card" style="margin-bottom: 14px;">
         <h3>Create Scholarship</h3>
@@ -550,36 +747,6 @@
           <h4 style="margin-top:14px;">Live Preview (Section Flow)</h4>
           <div id="scholarship-form-preview" class="card" style="background:#fff;"></div>
         </form>
-      </div>
-
-      <div class="card" style="margin-bottom: 14px;">
-        <h3>Manage Scholarships</h3>
-        <table class="table">
-          <thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Created</th><th>Action</th></tr></thead>
-          <tbody>
-          <?php foreach ($scholarshipsForAdmin as $sc): ?>
-            <tr>
-              <td><?= (int)$sc['id'] ?></td>
-              <td><?= h((string)$sc['title']) ?></td>
-              <td><?= h((string)$sc['status']) ?></td>
-              <td><?= h((string)$sc['created_at']) ?></td>
-              <td>
-                <button
-                  class="btn load-scholarship-btn"
-                  type="button"
-                  data-id="<?= (int)$sc['id'] ?>"
-                  data-title="<?= h((string)$sc['title']) ?>"
-                  data-description="<?= h((string)($sc['description'] ?? '')) ?>"
-                  data-status="<?= h((string)$sc['status']) ?>"
-                  data-schema="<?= h((string)$sc['form_schema_json']) ?>"
-                >
-                  Edit / New Version
-                </button>
-              </td>
-            </tr>
-          <?php endforeach; ?>
-          </tbody>
-        </table>
       </div>
 
       <div class="card" style="margin-bottom: 14px;">
@@ -966,7 +1133,9 @@
     <?php endif; ?>
 
     <?php if ($isAdmin): ?>
-      <?php
+      <?php /* duplicate block removed — data loaded at top of admin section */ ?>
+      <?php if (false): ?>
+        <?php
         $adminRoleCountStmt = $pdo->prepare(
           'SELECT
              SUM(CASE WHEN role = "admin" THEN 1 ELSE 0 END) AS admin_count,
@@ -1215,6 +1384,7 @@
           </table>
         <?php endif; ?>
       </div>
+    <?php endif; /* end if (false) duplicate guard */ ?>
     <?php endif; ?>
 
     <table class="table">
