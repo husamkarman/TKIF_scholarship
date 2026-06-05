@@ -29,10 +29,8 @@ $builderTypeLabels = [
 ];
 $builderTitleLabel = $builderTypeLabels[$builderType] ?? 'Form';
 $nodeTypes = ['welcome', 'agreement', 'section', 'form', 'thank_you'];
-$loadTemplateHeading = $builderType === 'scholarship'
-  ? 'Load Existing Scholarship'
-  : ($builderType === 'survey' ? 'Load Existing Survey' : 'Load Existing Quiz');
-$loadTemplateButtonLabel = $builderType === 'scholarship' ? 'Load Scholarship' : 'Load Form';
+$loadTemplateHeading = 'Load Template';
+$loadTemplateButtonLabel = 'Load Template';
 ?>
 
 <h2>Form Builder Workspace (Step 12)</h2>
@@ -60,7 +58,7 @@ $loadTemplateButtonLabel = $builderType === 'scholarship' ? 'Load Scholarship' :
     <form method="post" action="<?= h(app_route('form_builder') . '&builder_type=' . h($builderType)) ?>">
       <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
       <input type="hidden" name="action" value="load_template">
-      <label><?= h($builderType === 'scholarship' ? 'Scholarship Template' : 'Template') ?></label>
+      <label>Template</label>
       <select name="template">
         <?php foreach ($templates as $key => $meta): ?>
           <option value="<?= h((string)$key) ?>" <?= $selectedTemplate === (string)$key ? 'selected' : '' ?>>
@@ -86,21 +84,20 @@ $loadTemplateButtonLabel = $builderType === 'scholarship' ? 'Load Scholarship' :
     </p>
     <?php if ($selectedScholarshipId > 0): ?>
       <p style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; margin-bottom:0;">
-        <a class="btn" href="<?= h(app_route('form_responses_export') . '&format=csv&scholarship_id=' . (int)$selectedScholarshipId) ?>">Export Responses CSV</a>
-        <a class="btn" href="<?= h(app_route('form_responses_export') . '&format=xls&scholarship_id=' . (int)$selectedScholarshipId) ?>">Export Responses Excel</a>
+        <a class="btn" href="<?= h(app_route('form_responses_export') . '&format=csv&form_id=' . (int)$selectedScholarshipId) ?>">Export Responses CSV</a>
+        <a class="btn" href="<?= h(app_route('form_responses_export') . '&format=xls&form_id=' . (int)$selectedScholarshipId) ?>">Export Responses Excel</a>
       </p>
     <?php endif; ?>
   </div>
 
-  <?php if ($builderType === 'scholarship'): ?>
   <div class="card">
-    <h3>Load Existing Scholarship</h3>
-    <form method="post" action="<?= h(app_route('form_builder') . '&builder_type=scholarship') ?>">
+    <h3>Load Existing Form</h3>
+    <form method="post" action="<?= h(app_route('form_builder') . '&builder_type=' . h($builderType)) ?>">
       <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
       <input type="hidden" name="action" value="load_scholarship">
-      <label>Scholarship</label>
+      <label>Form</label>
       <select name="load_scholarship_id">
-        <option value="0">Create new scholarship form</option>
+        <option value="0">Create new form</option>
         <?php foreach ($scholarships as $sch): ?>
           <?php $sid = (int)($sch['id'] ?? 0); ?>
           <option value="<?= $sid ?>" <?= $selectedScholarshipId === $sid ? 'selected' : '' ?>>
@@ -109,10 +106,9 @@ $loadTemplateButtonLabel = $builderType === 'scholarship' ? 'Load Scholarship' :
         <?php endforeach; ?>
       </select>
       <br>
-      <button class="btn" type="submit">Load Scholarship</button>
+      <button class="btn" type="submit">Load Form</button>
     </form>
   </div>
-  <?php endif; ?>
 
   <div class="card">
     <h3>Field Catalog</h3>
@@ -135,6 +131,7 @@ $loadTemplateButtonLabel = $builderType === 'scholarship' ? 'Load Scholarship' :
   <form method="post" action="<?= h(app_route('form_builder_save')) ?>" id="form-builder-save-form">
     <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
     <input type="hidden" name="builder_type" value="<?= h($builderType) ?>">
+    <input type="hidden" name="form_id" id="fb_form_id" value="<?= (int)$selectedScholarshipId ?>">
     <input type="hidden" name="scholarship_id" id="fb_scholarship_id" value="<?= (int)$selectedScholarshipId ?>">
     <input type="hidden" name="selected_template" value="<?= h($selectedTemplate) ?>">
     <input type="hidden" name="save_action" id="fb_save_action" value="save_draft">
@@ -145,19 +142,16 @@ $loadTemplateButtonLabel = $builderType === 'scholarship' ? 'Load Scholarship' :
     <label>Description</label>
     <textarea name="description" id="fb_description" rows="3"><?= h($scholarshipDescription) ?></textarea>
 
-    <?php if ($builderType !== 'scholarship'): ?>
-      <p style="margin-top:8px; color:#555;"><strong>Note:</strong> Survey and Quiz modes currently support schema drafting. Publishing and persistent save are available in Scholarship mode.</p>
-    <?php endif; ?>
+    <p style="margin-top:8px; color:#555;"><strong>Note:</strong> Form Builder now saves unified forms. Builder mode works as an authoring preset.</p>
 
-    <?php if ($builderType === 'scholarship'): ?>
     <label>Status</label>
     <select name="status" id="fb_status" disabled>
       <option value="draft" <?= $scholarshipStatus === 'draft' ? 'selected' : '' ?>>draft</option>
       <option value="published" <?= $scholarshipStatus === 'published' ? 'selected' : '' ?>>published</option>
       <option value="closed" <?= $scholarshipStatus === 'closed' ? 'selected' : '' ?>>closed</option>
+      <option value="archived" <?= $scholarshipStatus === 'archived' ? 'selected' : '' ?>>archived</option>
     </select>
     <p style="color:#555; margin-top:6px;">Status is controlled by action: Save Draft or Publish.</p>
-    <?php endif; ?>
 
     <div class="grid" style="align-items:start; margin-top: 12px;">
       <div class="card" style="margin:0;">
