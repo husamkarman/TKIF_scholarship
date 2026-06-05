@@ -4749,8 +4749,21 @@ if ($page === 'blacklist_add' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) 
     exit('Forbidden');
   }
 
+  $addType = strtolower(trim((string)($_POST['add_type'] ?? '')));
+  $addValue = trim((string)($_POST['add_value'] ?? ''));
+
   $registerId = (int)($_POST['register_id'] ?? 0);
   $email = trim((string)($_POST['email'] ?? ''));
+  if ($addValue !== '') {
+    if ($addType === 'register_id') {
+      $registerId = (int)$addValue;
+    } elseif ($addType === 'email') {
+      $email = $addValue;
+    } elseif ($addType === 'reason') {
+      $error = 'Reason cannot identify a person by itself. Use email or registrar ID in Add New tab.';
+    }
+  }
+
   $emailNorm = $email !== '' ? normalize_email($email) : null;
   $reason = trim((string)($_POST['reason'] ?? ''));
   $blacklistForm = [
@@ -4803,8 +4816,19 @@ if ($page === 'blacklist_preview' && $_SERVER['REQUEST_METHOD'] === 'POST' && $p
     exit('Forbidden');
   }
 
+  $addType = strtolower(trim((string)($_POST['add_type'] ?? '')));
+  $addValue = trim((string)($_POST['add_value'] ?? ''));
   $registerId = (int)($_POST['register_id'] ?? 0);
   $email = trim((string)($_POST['email'] ?? ''));
+  if ($addValue !== '') {
+    if ($addType === 'register_id') {
+      $registerId = (int)$addValue;
+    } elseif ($addType === 'email') {
+      $email = $addValue;
+    } elseif ($addType === 'reason') {
+      $error = 'Reason cannot identify a person by itself. Use email or registrar ID for preview.';
+    }
+  }
   $emailNorm = $email !== '' ? normalize_email($email) : null;
   $reason = trim((string)($_POST['reason'] ?? ''));
   $blacklistForm = [
@@ -4923,6 +4947,136 @@ if ($page === 'blacklist_import' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pd
       }
     }
   }
+}
+
+if ($page === 'blacklist_whitelist_entry' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
+  require_csrf();
+  $actor = require_login();
+  if (!in_array((string)$actor['role'], ['admin', 'it'], true)) {
+    http_response_code(403);
+    exit('Forbidden');
+  }
+
+  $entryId = (int)($_POST['entry_id'] ?? 0);
+  if ($entryId <= 0) {
+    $error = 'Invalid blacklist entry.';
+    $page = 'dashboard';
+  } else {
+    if ((string)$actor['role'] === 'it') {
+      $entryStmt = $pdo->prepare('SELECT id, register_id, email_normalized FROM blacklist_entries WHERE id = ? LIMIT 1');
+      $entryStmt->execute([$entryId]);
+    } else {
+      $entryStmt = $pdo->prepare('SELECT id, register_id, email_normalized FROM blacklist_entries WHERE id = ? AND tenant_id = ? LIMIT 1');
+      $entryStmt->execute([$entryId, (int)$actor['tenant_id']]);
+    }
+    $entry = $entryStmt->fetch();
+
+    if (!$entry) {
+      $error = 'Blacklist entry not found.';
+      $page = 'dashboard';
+    } else {
+      $registerId = (int)($entry['register_id'] ?? 0);
+      $emailNorm = trim((string)($entry['email_normalized'] ?? ''));
+      $matchedUserIds = collect_blacklisted_user_ids($pdo, $registerId > 0 ? $registerId : null, $emailNorm !== '' ? $emailNorm : null);
+      $whitelistCount = set_users_blacklist_flag($pdo, $matchedUserIds, 0);
+
+      $deleteStmt = $pdo->prepare('DELETE FROM blacklist_entries WHERE id = ?');
+      $deleteStmt->execute([$entryId]);
+
+      $message = 'Entry moved to whitelist. User flags cleared: ' . (string)$whitelistCount . '.';
+      $page = 'dashboard';
+    }
+  }
+}
+
+if ($page === 'blacklist_export' && $pdo) {
+  $actor = require_login();
+  if (!in_array((string)$actor['role'], ['admin', 'it'], true)) {
+    http_response_code(403);
+    exit('Forbidden');
+  }
+
+  $format = strtolower(trim((string)($_GET['format'] ?? 'csv')));
+  if (!in_array($format, ['csv', 'xls'], true)) {
+    $format = 'csv';
+  }
+
+  $searchType = strtolower(trim((string)($_GET['search_type'] ?? 'email')));
+  if (!in_array($searchType, ['email', 'register_id', 'reason'], true)) {
+    $searchType = 'email';
+  }
+  $searchTerm = trim((string)($_GET['search_term'] ?? ''));
+
+  if ((string)$actor['role'] === 'it') {
+    $sql = 'SELECT id, tenant_id, register_id, email_original, email_normalized, reason, created_at FROM blacklist_entries';
+    $params = [];
+  } else {
+    $sql = 'SELECT id, tenant_id, register_id, email_original, email_normalized, reason, created_at FROM blacklist_entries WHERE tenant_id = ?';
+    $params = [(int)$actor['tenant_id']];
+  }
+
+  if ($searchTerm !== '') {
+    $column = $searchType === 'register_id' ? 'register_id' : ($searchType === 'reason' ? 'reason' : 'email_normalized');
+    if ($column === 'register_id') {
+      $sql .= strpos($sql, ' WHERE ') === false ? ' WHERE ' : ' AND ';
+      $sql .= 'register_id = ?';
+      $params[] = (int)$searchTerm;
+    } else {
+      $sql .= strpos($sql, ' WHERE ') === false ? ' WHERE ' : ' AND ';
+      $sql .= 'LOWER(COALESCE(' . $column . ', "")) LIKE ?';
+      $params[] = '%' . strtolower($searchTerm) . '%';
+    }
+  }
+  $sql .= ' ORDER BY id DESC LIMIT 1000';
+
+  $stmt = $pdo->prepare($sql);
+  $stmt->execute($params);
+  $rows = $stmt->fetchAll();
+
+  $filenameBase = 'blacklist_export_' . date('Ymd_His');
+  $headers = ['id', 'tenant_id', 'register_id', 'email_original', 'email_normalized', 'reason', 'created_at'];
+
+  if ($format === 'xls') {
+    header('Content-Type: application/vnd.ms-excel; charset=UTF-8');
+    header('Content-Disposition: attachment; filename="' . $filenameBase . '.xls"');
+    echo "\xEF\xBB\xBF";
+    echo '<table border="1"><tr>';
+    foreach ($headers as $headerLabel) {
+      echo '<th>' . h($headerLabel) . '</th>';
+    }
+    echo '</tr>';
+    foreach ($rows as $row) {
+      echo '<tr>';
+      foreach ($headers as $key) {
+        echo '<td>' . h((string)($row[$key] ?? '')) . '</td>';
+      }
+      echo '</tr>';
+    }
+    echo '</table>';
+    exit;
+  }
+
+  header('Content-Type: text/csv; charset=UTF-8');
+  header('Content-Disposition: attachment; filename="' . $filenameBase . '.csv"');
+  $output = fopen('php://output', 'wb');
+  if ($output === false) {
+    http_response_code(500);
+    exit('Failed to stream export');
+  }
+  fputcsv($output, $headers);
+  foreach ($rows as $row) {
+    fputcsv($output, [
+      (string)($row['id'] ?? ''),
+      (string)($row['tenant_id'] ?? ''),
+      (string)($row['register_id'] ?? ''),
+      (string)($row['email_original'] ?? ''),
+      (string)($row['email_normalized'] ?? ''),
+      (string)($row['reason'] ?? ''),
+      (string)($row['created_at'] ?? ''),
+    ]);
+  }
+  fclose($output);
+  exit;
 }
 
 if ($page === 'user_blacklist_toggle' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {

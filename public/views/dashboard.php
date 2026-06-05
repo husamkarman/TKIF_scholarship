@@ -195,6 +195,47 @@
         $verStmt->execute([$user['tenant_id']]);
         $scholarshipVersions = $verStmt->fetchAll();
       }
+
+      $blacklistActiveTab = 'search';
+      $blacklistSearchType = 'email';
+      $blacklistSearchTerm = '';
+      $blacklistRows = [];
+      if ($isAdmin) {
+        $blacklistActiveTab = strtolower(trim((string)($_GET['blacklist_tab'] ?? 'search')));
+        if (!in_array($blacklistActiveTab, ['import', 'export', 'search', 'add'], true)) {
+          $blacklistActiveTab = 'search';
+        }
+        $blacklistSearchType = strtolower(trim((string)($_GET['blacklist_search_type'] ?? 'email')));
+        if (!in_array($blacklistSearchType, ['email', 'register_id', 'reason'], true)) {
+          $blacklistSearchType = 'email';
+        }
+        $blacklistSearchTerm = trim((string)($_GET['blacklist_search_term'] ?? ''));
+
+        if ($isIt) {
+          $blacklistSql = 'SELECT id, tenant_id, register_id, email_original, email_normalized, reason, created_at FROM blacklist_entries';
+          $blacklistParams = [];
+        } else {
+          $blacklistSql = 'SELECT id, tenant_id, register_id, email_original, email_normalized, reason, created_at FROM blacklist_entries WHERE tenant_id = ?';
+          $blacklistParams = [(int)$user['tenant_id']];
+        }
+
+        if ($blacklistSearchTerm !== '') {
+          if ($blacklistSearchType === 'register_id') {
+            $blacklistSql .= strpos($blacklistSql, ' WHERE ') === false ? ' WHERE register_id = ?' : ' AND register_id = ?';
+            $blacklistParams[] = (int)$blacklistSearchTerm;
+          } elseif ($blacklistSearchType === 'reason') {
+            $blacklistSql .= strpos($blacklistSql, ' WHERE ') === false ? ' WHERE LOWER(COALESCE(reason, "")) LIKE ?' : ' AND LOWER(COALESCE(reason, "")) LIKE ?';
+            $blacklistParams[] = '%' . strtolower($blacklistSearchTerm) . '%';
+          } else {
+            $blacklistSql .= strpos($blacklistSql, ' WHERE ') === false ? ' WHERE LOWER(COALESCE(email_normalized, "")) LIKE ?' : ' AND LOWER(COALESCE(email_normalized, "")) LIKE ?';
+            $blacklistParams[] = '%' . strtolower($blacklistSearchTerm) . '%';
+          }
+        }
+        $blacklistSql .= ' ORDER BY id DESC LIMIT 300';
+        $blacklistStmt = $pdo->prepare($blacklistSql);
+        $blacklistStmt->execute($blacklistParams);
+        $blacklistRows = $blacklistStmt->fetchAll();
+      }
     ?>
     <?php if ($user['role'] === 'manager'): ?>
       <?php
@@ -747,19 +788,69 @@
     <?php if ($isAdmin): ?>
       <div class="card" style="margin-bottom: 14px;">
         <h3>Blacklist Management</h3>
-        <p>Admin and IT use global Registration ID (users.register_id) or email across all tenants. For non-registered persons, use email only. Use Preview Person before adding the blacklist row.</p>
-        <form method="post" action="<?= h(app_route('blacklist_add')) ?>">
-          <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
-          <label>Registration ID (use for registered users, optional if email is provided)</label>
-          <input type="number" name="register_id" min="1" placeholder="e.g. 125" value="<?= h((string)($blacklistForm['register_id'] ?? '')) ?>">
-          <label>Email (required for non-registered persons)</label>
-          <input type="email" name="email" placeholder="student@example.com" value="<?= h((string)($blacklistForm['email'] ?? '')) ?>">
-          <label>Reason (optional)</label>
-          <input name="reason" placeholder="Example: Fraud attempt / Duplicate identity" value="<?= h((string)($blacklistForm['reason'] ?? '')) ?>">
-          <br>
-          <button class="btn" type="submit" formaction="<?= h(app_route('blacklist_preview')) ?>">Preview Person</button>
-          <button class="btn" type="submit">Add Blacklist Entry</button>
-        </form>
+        <p>Manage blacklist rows in one table, with dedicated tabs for import, export, search, and add new entries.</p>
+
+        <div style="margin-bottom: 10px; display:flex; gap:8px; flex-wrap:wrap;">
+          <a class="btn <?= $blacklistActiveTab === 'import' ? 'primary' : '' ?>" href="<?= h(app_route('dashboard') . '&blacklist_tab=import&blacklist_search_type=' . rawurlencode($blacklistSearchType) . '&blacklist_search_term=' . rawurlencode($blacklistSearchTerm)) ?>">Import Excel/CSV</a>
+          <a class="btn <?= $blacklistActiveTab === 'export' ? 'primary' : '' ?>" href="<?= h(app_route('dashboard') . '&blacklist_tab=export&blacklist_search_type=' . rawurlencode($blacklistSearchType) . '&blacklist_search_term=' . rawurlencode($blacklistSearchTerm)) ?>">Export Excel/CSV</a>
+          <a class="btn <?= $blacklistActiveTab === 'search' ? 'primary' : '' ?>" href="<?= h(app_route('dashboard') . '&blacklist_tab=search&blacklist_search_type=' . rawurlencode($blacklistSearchType) . '&blacklist_search_term=' . rawurlencode($blacklistSearchTerm)) ?>">Search</a>
+          <a class="btn <?= $blacklistActiveTab === 'add' ? 'primary' : '' ?>" href="<?= h(app_route('dashboard') . '&blacklist_tab=add&blacklist_search_type=' . rawurlencode($blacklistSearchType) . '&blacklist_search_term=' . rawurlencode($blacklistSearchTerm)) ?>">Add New Blacklist</a>
+        </div>
+
+        <?php if ($blacklistActiveTab === 'import'): ?>
+          <h4 style="margin-top:10px;">Import Excel/CSV</h4>
+          <p>Headers supported: register_id,email,reason (reason optional)</p>
+          <form method="post" action="<?= h(app_route('blacklist_import')) ?>" enctype="multipart/form-data">
+            <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+            <input type="file" name="blacklist_file" accept=".csv,.xlsx" required>
+            <button class="btn" type="submit">Import Blacklist File</button>
+          </form>
+        <?php elseif ($blacklistActiveTab === 'export'): ?>
+          <h4 style="margin-top:10px;">Export Excel/CSV</h4>
+          <p>Export uses current search filter.</p>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <a class="btn" href="<?= h(app_route('blacklist_export') . '&format=csv&search_type=' . rawurlencode($blacklistSearchType) . '&search_term=' . rawurlencode($blacklistSearchTerm)) ?>">Export CSV</a>
+            <a class="btn" href="<?= h(app_route('blacklist_export') . '&format=xls&search_type=' . rawurlencode($blacklistSearchType) . '&search_term=' . rawurlencode($blacklistSearchTerm)) ?>">Export Excel</a>
+          </div>
+        <?php elseif ($blacklistActiveTab === 'add'): ?>
+          <h4 style="margin-top:10px;">Add New Blacklist</h4>
+          <form method="post" action="<?= h(app_route('blacklist_add')) ?>">
+            <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+            <label>Add By</label>
+            <select name="add_type" required>
+              <option value="email">email</option>
+              <option value="register_id">registrar ID</option>
+              <option value="reason">reason</option>
+            </select>
+            <label>Value</label>
+            <input name="add_value" placeholder="Enter email, registrar ID, or reason keyword" value="<?= h((string)($blacklistForm['email'] ?? $blacklistForm['register_id'] ?? '')) ?>">
+            <label>Reason</label>
+            <input name="reason" placeholder="Example: Fraud attempt / Duplicate identity" value="<?= h((string)($blacklistForm['reason'] ?? '')) ?>">
+            <button class="btn" type="submit" formaction="<?= h(app_route('blacklist_preview')) ?>">Preview Person</button>
+            <button class="btn" type="submit">Add Blacklist Entry</button>
+          </form>
+        <?php else: ?>
+          <h4 style="margin-top:10px;">Search Blacklist</h4>
+          <form method="get" action="<?= h(app_route('dashboard')) ?>" style="display:flex; gap:8px; flex-wrap:wrap; align-items:end;">
+            <input type="hidden" name="page" value="dashboard">
+            <input type="hidden" name="blacklist_tab" value="search">
+            <div>
+              <label>Search Type</label>
+              <select name="blacklist_search_type">
+                <option value="email" <?= $blacklistSearchType === 'email' ? 'selected' : '' ?>>email</option>
+                <option value="register_id" <?= $blacklistSearchType === 'register_id' ? 'selected' : '' ?>>registrar ID</option>
+                <option value="reason" <?= $blacklistSearchType === 'reason' ? 'selected' : '' ?>>reason</option>
+              </select>
+            </div>
+            <div>
+              <label>Search</label>
+              <input name="blacklist_search_term" value="<?= h($blacklistSearchTerm) ?>" placeholder="Search value">
+            </div>
+            <div>
+              <button class="btn" type="submit">Apply</button>
+            </div>
+          </form>
+        <?php endif; ?>
 
         <?php if (is_array($blacklistPreview ?? null)): ?>
           <div class="card" style="margin-top: 12px;">
@@ -801,13 +892,33 @@
           </div>
         <?php endif; ?>
 
-        <h4 style="margin-top:14px;">Import Excel/CSV</h4>
-        <p>Headers supported: register_id,email,reason (reason optional)</p>
-        <form method="post" action="<?= h(app_route('blacklist_import')) ?>" enctype="multipart/form-data">
-          <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
-          <input type="file" name="blacklist_file" accept=".csv,.xlsx" required>
-          <button class="btn" type="submit">Import Blacklist File</button>
-        </form>
+        <h4 style="margin-top:14px;">Blacklist Table</h4>
+        <?php if ($blacklistRows === []): ?>
+          <p>No blacklist rows found for current filter.</p>
+        <?php else: ?>
+          <table class="table">
+            <thead><tr><th>ID</th><th>Tenant</th><th>register_id</th><th>Email</th><th>Reason</th><th>Created</th><th>Whitelist</th></tr></thead>
+            <tbody>
+            <?php foreach ($blacklistRows as $b): ?>
+              <tr>
+                <td><?= (int)($b['id'] ?? 0) ?></td>
+                <td>#<?= (int)($b['tenant_id'] ?? 0) ?></td>
+                <td><?= h((string)($b['register_id'] ?? '')) ?></td>
+                <td><?= h((string)($b['email_original'] ?? '')) ?></td>
+                <td><?= h(blacklist_reason_text($b['reason'] ?? null)) ?></td>
+                <td><?= h((string)($b['created_at'] ?? '')) ?></td>
+                <td>
+                  <form method="post" action="<?= h(app_route('blacklist_whitelist_entry')) ?>">
+                    <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+                    <input type="hidden" name="entry_id" value="<?= (int)($b['id'] ?? 0) ?>">
+                    <button class="btn" type="submit">Move to Whitelist</button>
+                  </form>
+                </td>
+              </tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+        <?php endif; ?>
       </div>
 
       <div class="card" style="margin-bottom: 14px;">
@@ -947,9 +1058,6 @@
       $oldUsersStmt->execute([$user['tenant_id']]);
       $oldUsers = $oldUsersStmt->fetchAll();
 
-      $blacklistStmt = $pdo->query('SELECT register_id, email_original, reason, created_at FROM blacklist_entries ORDER BY id ASC LIMIT 100');
-      $blacklistRows = $blacklistStmt->fetchAll();
-
       $notificationRows = [];
       if (in_array($user['role'], ['admin', 'it'], true) && function_exists('notification_inbox_ready') && notification_inbox_ready($pdo)) {
         $notificationStmt = $pdo->prepare(
@@ -1075,22 +1183,6 @@
         <?php endif; ?>
       </div>
 
-      <div class="card" style="margin-bottom:14px;">
-        <h3>Blacklist Table</h3>
-        <table class="table">
-          <thead><tr><th>register_id</th><th>Email</th><th>Reason</th><th>Created</th></tr></thead>
-          <tbody>
-          <?php foreach ($blacklistRows as $b): ?>
-            <tr>
-              <td><?= h((string)($b['register_id'] ?? '')) ?></td>
-              <td><?= h((string)($b['email_original'] ?? '')) ?></td>
-              <td><?= h(blacklist_reason_text($b['reason'] ?? null)) ?></td>
-              <td><?= h($b['created_at']) ?></td>
-            </tr>
-          <?php endforeach; ?>
-          </tbody>
-        </table>
-      </div>
     <?php endif; ?>
 
     <?php if ($isAdmin): ?>
