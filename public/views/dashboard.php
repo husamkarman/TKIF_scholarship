@@ -678,14 +678,7 @@
                 <td><?= h((string)($sch['created_by_name'] ?? '')) ?></td>
                 <td><?= h((string)$sch['created_at']) ?></td>
                 <td>
-                  <button class="btn load-scholarship-btn" type="button"
-                    data-id="<?= (int)$sch['id'] ?>"
-                    data-title="<?= h((string)$sch['title']) ?>"
-                    data-description="<?= h((string)($sch['description'] ?? '')) ?>"
-                    data-status="<?= h((string)$sch['status']) ?>"
-                    data-schema="<?= h((string)($sch['form_schema_json'] ?? '[]')) ?>">
-                    Edit / New Version
-                  </button>
+                  <a class="btn" href="<?= h(app_route('form_builder') . '&builder_type=scholarship&scholarship_id=' . (int)$sch['id']) ?>">Edit / New Version</a>
                   <?php if ((string)$sch['status'] !== 'published'): ?>
                   <form method="post" action="<?= h(app_route('create_scholarship')) ?>" style="display:inline">
                     <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
@@ -715,60 +708,6 @@
             </tbody>
           </table>
         <?php endif; ?>
-      </div>
-
-      <div class="card" style="margin-bottom: 14px;">
-        <h3>Create Scholarship</h3>
-        <form method="post" action="<?= h(app_route('create_scholarship')) ?>" id="create-scholarship-form">
-          <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
-          <input type="hidden" name="scholarship_id" id="scholarship_id" value="0">
-          <input type="hidden" name="form_schema_json" id="form_schema_json" value="[]">
-          <input type="hidden" name="form_settings_json" id="form_settings_json" value="{}">
-
-          <p id="scholarship-editor-mode"><strong>Mode:</strong> Create new scholarship</p>
-
-          <label>Title</label>
-          <input name="title" id="scholarship_title_input" required>
-
-          <label>Description</label>
-          <textarea name="description" id="scholarship_description_input" rows="3"></textarea>
-
-          <label>Status</label>
-          <select name="status" id="scholarship_status_input">
-            <option value="draft">Draft</option>
-            <option value="published">Published</option>
-            <option value="closed">Closed</option>
-          </select>
-
-          <p style="margin-top:8px; color:#555;">When editing an existing scholarship, each save creates a new form version.</p>
-
-          <h4>Form Settings</h4>
-          <div class="grid">
-            <label><input type="checkbox" id="setting_one_response_per_user"> One response per user</label>
-            <label><input type="checkbox" id="setting_allow_edit_after_submit"> Allow edit after submit</label>
-            <div>
-              <label>Autosave interval (seconds)</label>
-              <input id="setting_autosave_interval_seconds" type="number" min="5" max="300" value="30">
-            </div>
-            <div>
-              <label>Submission start</label>
-              <input id="setting_submission_start_at" type="datetime-local">
-            </div>
-            <div>
-              <label>Submission end</label>
-              <input id="setting_submission_end_at" type="datetime-local">
-            </div>
-          </div>
-
-          <h4>Page Nodes</h4>
-          <div id="fields-builder"></div>
-          <button class="btn" type="button" id="add-field-btn">Add Node</button>
-          <button class="btn" type="button" id="reset-scholarship-editor">Reset Editor</button>
-          <button class="btn primary" type="submit" id="save-scholarship-btn">Save Scholarship</button>
-
-          <h4 style="margin-top:14px;">Live Preview (Section Flow)</h4>
-          <div id="scholarship-form-preview" class="card" style="background:#fff;"></div>
-        </form>
       </div>
 
       <div class="card" style="margin-bottom: 14px;">

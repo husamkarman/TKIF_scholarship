@@ -1,23 +1,58 @@
 <?php
-$templates = form_builder_starter_templates();
+$builderType = strtolower(trim((string)($formBuilderEntityType ?? 'scholarship')));
+if (!in_array($builderType, ['scholarship', 'survey', 'quiz'], true)) {
+  $builderType = 'scholarship';
+}
+$templates = form_builder_templates_for_builder_type($builderType);
 $catalog = form_builder_field_catalog();
-$templateMeta = is_array($formBuilderTemplateMeta ?? null) ? $formBuilderTemplateMeta : form_builder_starter_template('basic_application');
-$selectedTemplate = (string)($formBuilderSelectedTemplate ?? 'basic_application');
-$draftSchema = (string)($formBuilderDraftSchema ?? form_builder_starter_template_json('basic_application'));
+$defaultTemplateKey = (string)array_key_first($templates);
+if ($defaultTemplateKey === '') {
+  $defaultTemplateKey = 'basic_application';
+}
+$templateMeta = is_array($formBuilderTemplateMeta ?? null) ? $formBuilderTemplateMeta : form_builder_starter_template($defaultTemplateKey);
+$selectedTemplate = (string)($formBuilderSelectedTemplate ?? $defaultTemplateKey);
+if (!isset($templates[$selectedTemplate])) {
+  $selectedTemplate = $defaultTemplateKey;
+  $templateMeta = form_builder_starter_template($selectedTemplate);
+}
+$draftSchema = (string)($formBuilderDraftSchema ?? form_builder_starter_template_json($selectedTemplate));
 $scholarships = is_array($formBuilderScholarships ?? null) ? $formBuilderScholarships : [];
 $selectedScholarshipId = (int)($formBuilderScholarshipId ?? 0);
 $scholarshipTitle = (string)($formBuilderScholarshipTitle ?? '');
 $scholarshipDescription = (string)($formBuilderScholarshipDescription ?? '');
 $scholarshipStatus = (string)($formBuilderScholarshipStatus ?? 'draft');
+
+$builderTypeLabels = [
+  'scholarship' => 'Scholarship',
+  'survey' => 'Survey',
+  'quiz' => 'Quiz',
+];
+$builderTitleLabel = $builderTypeLabels[$builderType] ?? 'Form';
 ?>
 
 <h2>Form Builder Workspace (Step 12)</h2>
-<p>Build scholarship form schemas here, then save as draft or publish directly to the live scholarship pipeline.</p>
+<p>Build <?= h(strtolower($builderTitleLabel)) ?> forms in a dedicated page outside the dashboard.</p>
 
 <div class="grid">
   <div class="card">
+    <h3>Builder Type</h3>
+    <form method="post" action="<?= h(app_route('form_builder') . '&builder_type=' . h($builderType)) ?>">
+      <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+      <input type="hidden" name="action" value="switch_builder_type">
+      <label>Mode</label>
+      <select name="builder_type">
+        <option value="scholarship" <?= $builderType === 'scholarship' ? 'selected' : '' ?>>Scholarship</option>
+        <option value="survey" <?= $builderType === 'survey' ? 'selected' : '' ?>>Survey</option>
+        <option value="quiz" <?= $builderType === 'quiz' ? 'selected' : '' ?>>Quiz</option>
+      </select>
+      <br>
+      <button class="btn" type="submit">Switch Builder</button>
+    </form>
+  </div>
+
+  <div class="card">
     <h3>Load Template</h3>
-    <form method="post" action="<?= h(app_route('form_builder')) ?>">
+    <form method="post" action="<?= h(app_route('form_builder') . '&builder_type=' . h($builderType)) ?>">
       <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
       <input type="hidden" name="action" value="load_template">
       <label>Template</label>
@@ -35,9 +70,10 @@ $scholarshipStatus = (string)($formBuilderScholarshipStatus ?? 'draft');
     <p style="margin-top:10px;"><strong>Description:</strong> <?= h((string)($templateMeta['description'] ?? '')) ?></p>
   </div>
 
+  <?php if ($builderType === 'scholarship'): ?>
   <div class="card">
     <h3>Load Existing Scholarship</h3>
-    <form method="post" action="<?= h(app_route('form_builder')) ?>">
+    <form method="post" action="<?= h(app_route('form_builder') . '&builder_type=scholarship') ?>">
       <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
       <input type="hidden" name="action" value="load_scholarship">
       <label>Scholarship</label>
@@ -54,6 +90,7 @@ $scholarshipStatus = (string)($formBuilderScholarshipStatus ?? 'draft');
       <button class="btn" type="submit">Load Scholarship</button>
     </form>
   </div>
+  <?php endif; ?>
 
   <div class="card">
     <h3>Field Catalog</h3>
@@ -75,16 +112,22 @@ $scholarshipStatus = (string)($formBuilderScholarshipStatus ?? 'draft');
   <h3>Form Editor</h3>
   <form method="post" action="<?= h(app_route('form_builder_save')) ?>" id="form-builder-save-form">
     <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+    <input type="hidden" name="builder_type" value="<?= h($builderType) ?>">
     <input type="hidden" name="scholarship_id" id="fb_scholarship_id" value="<?= (int)$selectedScholarshipId ?>">
     <input type="hidden" name="selected_template" value="<?= h($selectedTemplate) ?>">
     <input type="hidden" name="save_action" id="fb_save_action" value="save_draft">
 
-    <label>Scholarship Title</label>
+    <label><?= h($builderTitleLabel) ?> Title</label>
     <input name="title" id="fb_title" value="<?= h($scholarshipTitle) ?>" required>
 
     <label>Description</label>
     <textarea name="description" id="fb_description" rows="3"><?= h($scholarshipDescription) ?></textarea>
 
+    <?php if ($builderType !== 'scholarship'): ?>
+      <p style="margin-top:8px; color:#555;"><strong>Note:</strong> Survey and Quiz modes currently support schema drafting. Publishing and persistent save are available in Scholarship mode.</p>
+    <?php endif; ?>
+
+    <?php if ($builderType === 'scholarship'): ?>
     <label>Status</label>
     <select name="status" id="fb_status" disabled>
       <option value="draft" <?= $scholarshipStatus === 'draft' ? 'selected' : '' ?>>draft</option>
@@ -92,6 +135,7 @@ $scholarshipStatus = (string)($formBuilderScholarshipStatus ?? 'draft');
       <option value="closed" <?= $scholarshipStatus === 'closed' ? 'selected' : '' ?>>closed</option>
     </select>
     <p style="color:#555; margin-top:6px;">Status is controlled by action: Save Draft or Publish.</p>
+    <?php endif; ?>
 
     <h4>Visual Field Builder</h4>
     <div id="fb_fields_container"></div>
@@ -104,13 +148,14 @@ $scholarshipStatus = (string)($formBuilderScholarshipStatus ?? 'draft');
       <button class="btn" type="button" id="fb_sync_visual_from_json">Reload Visual from JSON</button>
       <button class="btn" type="button" id="fb_sync_json_from_visual">Sync JSON from Visual</button>
       <button class="btn" type="submit" id="fb_save_draft">Save Draft</button>
-      <button class="btn primary" type="submit" id="fb_publish">Publish</button>
+      <button class="btn primary" type="submit" id="fb_publish" <?= $builderType !== 'scholarship' ? 'disabled' : '' ?>>Publish</button>
     </div>
   </form>
 </div>
 
 <script>
 (function () {
+  const builderType = <?= json_encode($builderType, JSON_UNESCAPED_UNICODE) ?>;
   const fieldsContainer = document.getElementById('fb_fields_container');
   const schemaTextarea = document.getElementById('fb_schema_json');
   const addBtn = document.getElementById('fb_add_field');
@@ -153,6 +198,7 @@ $scholarshipStatus = (string)($formBuilderScholarshipStatus ?? 'draft');
         '<option value="email">email</option>' +
         '<option value="date">date</option>' +
         '<option value="phone">phone</option>' +
+        '<option value="linear_scale">linear scale</option>' +
         '<option value="select">select</option>' +
         '<option value="radio">radio</option>' +
         '<option value="checkbox">checkbox</option>' +
@@ -174,7 +220,7 @@ $scholarshipStatus = (string)($formBuilderScholarshipStatus ?? 'draft');
 
     function toggleOptions() {
       const type = row.querySelector('.fb-type').value;
-      row.querySelector('.fb-options').style.display = ['select', 'radio', 'checkbox'].includes(type) ? '' : 'none';
+      row.querySelector('.fb-options').style.display = ['select', 'radio', 'checkbox', 'linear_scale'].includes(type) ? '' : 'none';
       row.querySelector('.fb-text-rule').style.display = ['text', 'textarea'].includes(type) ? '' : 'none';
       if (!['text', 'textarea'].includes(type)) {
         row.querySelector('.fb-text-rule').value = 'none';
@@ -203,7 +249,7 @@ $scholarshipStatus = (string)($formBuilderScholarshipStatus ?? 'draft');
       return [];
     }
 
-    const allowedTypes = ['text', 'textarea', 'number', 'email', 'date', 'phone', 'select', 'radio', 'checkbox'];
+    const allowedTypes = ['text', 'textarea', 'number', 'email', 'date', 'phone', 'linear_scale', 'select', 'radio', 'checkbox'];
     const out = [];
 
     raw.forEach(function (field, index) {
@@ -237,7 +283,7 @@ $scholarshipStatus = (string)($formBuilderScholarshipStatus ?? 'draft');
         normalized.allow_country_change = true;
         normalized.validation_mode = 'country_strict';
       }
-      if (['select', 'radio', 'checkbox'].includes(type)) {
+      if (['select', 'radio', 'checkbox', 'linear_scale'].includes(type)) {
         const options = Array.isArray(field.options)
           ? field.options.map(function (opt) { return String(opt || '').trim(); }).filter(Boolean)
           : [];
@@ -271,7 +317,7 @@ $scholarshipStatus = (string)($formBuilderScholarshipStatus ?? 'draft');
         field.allow_country_change = true;
         field.validation_mode = 'country_strict';
       }
-      if (['select', 'radio', 'checkbox'].includes(type)) {
+      if (['select', 'radio', 'checkbox', 'linear_scale'].includes(type)) {
         field.options = parseOptions(row.querySelector('.fb-options').value);
       }
       schema.push(field);
@@ -318,6 +364,10 @@ $scholarshipStatus = (string)($formBuilderScholarshipStatus ?? 'draft');
     saveActionInput.value = 'save_draft';
   });
   publishBtn.addEventListener('click', function () {
+    if (builderType !== 'scholarship') {
+      saveActionInput.value = 'save_draft';
+      return;
+    }
     saveActionInput.value = 'publish';
   });
 
