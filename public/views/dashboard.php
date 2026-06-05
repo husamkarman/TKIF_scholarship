@@ -585,11 +585,21 @@
         }
 
         $adminUsersSql = $usersBlacklistReady
-          ? 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, blacklist, email_verified_at, created_at FROM users WHERE tenant_id = ? AND role IN ("manager", "student") ORDER BY id DESC LIMIT 500'
-          : 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users WHERE tenant_id = ? AND role IN ("manager", "student") ORDER BY id DESC LIMIT 500';
+          ? 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, blacklist, email_verified_at, created_at FROM users WHERE role != "it" ORDER BY id DESC LIMIT 500'
+          : 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users WHERE role != "it" ORDER BY id DESC LIMIT 500';
         $adminUsersStmt = $pdo->prepare($adminUsersSql);
-        $adminUsersStmt->execute([(int)$user['tenant_id']]);
+        $adminUsersStmt->execute();
         $adminUsers = $adminUsersStmt->fetchAll();
+        $adminVisibleManagerCount = 0;
+        $adminVisibleStudentCount = 0;
+        foreach ($adminUsers as $adminUserRow) {
+          $adminUserRole = (string)($adminUserRow['role'] ?? '');
+          if ($adminUserRole === 'manager') {
+            $adminVisibleManagerCount++;
+          } elseif ($adminUserRole === 'student') {
+            $adminVisibleStudentCount++;
+          }
+        }
         $adminAssignableRoles = assignable_roles_for_actor($user);
 
         $schKpiStmt = $pdo->prepare(
@@ -641,8 +651,8 @@
       <div class="card" style="margin-bottom: 14px;">
         <h3>Tenant User Management</h3>
         <div class="grid" style="margin-bottom: 12px;">
-          <div class="card"><strong><?= (int)($adminRoleCounts['manager_count'] ?? 0) ?></strong><br><span class="muted">Managers</span></div>
-          <div class="card"><strong><?= (int)($adminRoleCounts['student_count'] ?? 0) ?></strong><br><span class="muted">Students</span></div>
+          <div class="card"><strong><?= (int)($adminVisibleManagerCount ?? 0) ?></strong><br><span class="muted">Managers</span></div>
+          <div class="card"><strong><?= (int)($adminVisibleStudentCount ?? 0) ?></strong><br><span class="muted">Students</span></div>
           <div class="card"><strong><?= count($adminUsers) ?></strong><br><span class="muted">Rows Shown</span></div>
         </div>
         <?php if ($adminUsers === []): ?>
@@ -1277,11 +1287,21 @@
         }
 
         $adminUsersSql = $usersBlacklistReady
-          ? 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, blacklist, email_verified_at, created_at FROM users WHERE tenant_id = ? AND role IN ("manager", "student") ORDER BY id DESC LIMIT 500'
-          : 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users WHERE tenant_id = ? AND role IN ("manager", "student") ORDER BY id DESC LIMIT 500';
+          ? 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, blacklist, email_verified_at, created_at FROM users WHERE role != "it" ORDER BY id DESC LIMIT 500'
+          : 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users WHERE role != "it" ORDER BY id DESC LIMIT 500';
         $adminUsersStmt = $pdo->prepare($adminUsersSql);
-        $adminUsersStmt->execute([(int)$user['tenant_id']]);
+        $adminUsersStmt->execute();
         $adminUsers = $adminUsersStmt->fetchAll();
+        $adminVisibleManagerCount = 0;
+        $adminVisibleStudentCount = 0;
+        foreach ($adminUsers as $adminUserRow) {
+          $adminUserRole = (string)($adminUserRow['role'] ?? '');
+          if ($adminUserRole === 'manager') {
+            $adminVisibleManagerCount++;
+          } elseif ($adminUserRole === 'student') {
+            $adminVisibleStudentCount++;
+          }
+        }
 
         $adminAssignableRoles = assignable_roles_for_actor($user);
 
