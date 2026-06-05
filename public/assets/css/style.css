@@ -170,6 +170,51 @@ input, textarea, select {
   color: #425466;
 }
 
+.scholarship-form-card {
+  background: var(--form-background, #fafcff);
+  color: var(--form-text, #1a2733);
+  font-family: var(--form-font-family, "Segoe UI", Tahoma, Geneva, Verdana, sans-serif);
+}
+
+.scholarship-form-card h3 {
+  color: var(--form-primary, #0d6f3b);
+}
+
+.scholarship-form-card .scholarship-apply-form {
+  background: var(--form-surface, #ffffff);
+  border: 1px solid var(--form-primary, #0d6f3b);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.scholarship-form-card .dynamic-field {
+  border: 1px solid var(--form-accent, #0d6f3b);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+  background: var(--form-surface, #ffffff);
+}
+
+.scholarship-form-card .dynamic-field label {
+  color: var(--form-text, #1a2733);
+}
+
+.scholarship-form-card .dynamic-field input,
+.scholarship-form-card .dynamic-field select,
+.scholarship-form-card .dynamic-field textarea {
+  border-color: var(--form-accent, #c7d5e3);
+}
+
+.scholarship-form-card .btn.primary,
+.scholarship-form-card button.btn.primary[type="submit"] {
+  background: var(--form-primary, #0d6f3b);
+  border-color: var(--form-primary, #0d6f3b);
+}
+
+.scholarship-form-card .step-indicator {
+  color: var(--form-text, #456);
+}
+
 @media (max-width: 768px) {
   .container {
     margin: 10px;

@@ -24,7 +24,35 @@
   ?>
   <?php if ($user['role'] === 'student'): ?>
     <?php
-      $stmt = $pdo->prepare('SELECT id, title, description, form_schema_json FROM scholarships WHERE tenant_id = ? AND status = "published" ORDER BY id DESC');
+      if (function_exists('forms_tables_ready') && forms_tables_ready($pdo)) {
+        $stmt = $pdo->prepare(
+          'SELECT s.id,
+                  s.title,
+                  s.description,
+                  s.form_schema_json,
+                  COALESCE(v.theme_json, f.theme_json, "{}") AS theme_json
+           FROM scholarships s
+           LEFT JOIN forms f
+             ON f.id = s.id
+            AND f.tenant_id = s.tenant_id
+           LEFT JOIN form_versions v
+             ON v.form_id = f.id
+            AND v.tenant_id = f.tenant_id
+            AND v.status = "published"
+            AND v.version_no = (
+              SELECT MAX(v2.version_no)
+              FROM form_versions v2
+              WHERE v2.form_id = f.id
+                AND v2.tenant_id = f.tenant_id
+                AND v2.status = "published"
+            )
+           WHERE s.tenant_id = ?
+             AND s.status = "published"
+           ORDER BY s.id DESC'
+        );
+      } else {
+        $stmt = $pdo->prepare('SELECT id, title, description, form_schema_json, "{}" AS theme_json FROM scholarships WHERE tenant_id = ? AND status = "published" ORDER BY id DESC');
+      }
       $stmt->execute([$user['tenant_id']]);
       $scholarships = $stmt->fetchAll();
 
@@ -133,7 +161,16 @@
 
     <div class="grid">
       <?php foreach ($scholarships as $s): ?>
-        <div class="card">
+        <?php
+          $formTheme = normalize_form_theme(json_decode((string)($s['theme_json'] ?? '{}'), true));
+          $formThemeStyle = '--form-primary:' . (string)$formTheme['primary_color']
+            . ';--form-accent:' . (string)$formTheme['accent_color']
+            . ';--form-background:' . (string)$formTheme['background_color']
+            . ';--form-surface:' . (string)$formTheme['surface_color']
+            . ';--form-text:' . (string)$formTheme['text_color']
+            . ';--form-font-family:' . (string)$formTheme['font_family'] . ';';
+        ?>
+        <div class="card scholarship-form-card" style="<?= h($formThemeStyle) ?>">
           <h3><?= h($s['title']) ?></h3>
           <p><?= h((string)$s['description']) ?></p>
           <?php
