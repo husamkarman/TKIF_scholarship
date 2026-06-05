@@ -97,10 +97,6 @@ jobs:
         run: |
           mysql -h127.0.0.1 -uroot -proot < sql/schema.sql
           mysql -h127.0.0.1 -uroot -proot < sql/seed.sql
-          for migration in sql/migrations/*.sql; do
-            echo "Applying ${migration}"
-            mysql -h127.0.0.1 -uroot -proot < "${migration}"
-          done
 
       - name: Start PHP server
         run: |
