@@ -24,7 +24,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -97,12 +97,10 @@ jobs:
         run: |
           mysql -h127.0.0.1 -uroot -proot < sql/schema.sql
           mysql -h127.0.0.1 -uroot -proot < sql/seed.sql
-          mysql -h127.0.0.1 -uroot -proot < sql/migrations/20260603_add_blacklist_entries.sql
-          mysql -h127.0.0.1 -uroot -proot < sql/migrations/20260603_make_blacklist_reason_nullable.sql
-          mysql -h127.0.0.1 -uroot -proot < sql/migrations/20260603_add_otp_codes.sql
-          mysql -h127.0.0.1 -uroot -proot < sql/migrations/20260603_add_provider_tenants.sql
-          mysql -h127.0.0.1 -uroot -proot < sql/migrations/20260603_add_user_profiles.sql
-          mysql -h127.0.0.1 -uroot -proot < sql/migrations/20260603_add_application_filter_indexes.sql
+          for migration in sql/migrations/*.sql; do
+            echo "Applying ${migration}"
+            mysql -h127.0.0.1 -uroot -proot < "${migration}"
+          done
 
       - name: Start PHP server
         run: |
