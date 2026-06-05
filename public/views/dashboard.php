@@ -814,21 +814,82 @@
           </div>
         <?php elseif ($blacklistActiveTab === 'add'): ?>
           <h4 style="margin-top:10px;">Add New Blacklist</h4>
-          <form method="post" action="<?= h(app_route('blacklist_add')) ?>">
+          <form method="post" action="<?= h(app_route('blacklist_add')) ?>" id="blacklist-add-form">
             <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
             <label>Add By</label>
-            <select name="add_type" required>
+            <select name="add_type" id="blacklist-add-type" required>
               <option value="email">email</option>
               <option value="register_id">registrar ID</option>
               <option value="reason">reason</option>
             </select>
             <label>Value</label>
-            <input name="add_value" placeholder="Enter email, registrar ID, or reason keyword" value="<?= h((string)($blacklistForm['email'] ?? $blacklistForm['register_id'] ?? '')) ?>">
+            <input name="add_value" id="blacklist-add-value" placeholder="Enter email, registrar ID, or reason keyword" value="<?= h((string)($blacklistForm['email'] ?? $blacklistForm['register_id'] ?? '')) ?>" required>
             <label>Reason</label>
             <input name="reason" placeholder="Example: Fraud attempt / Duplicate identity" value="<?= h((string)($blacklistForm['reason'] ?? '')) ?>">
             <button class="btn" type="submit" formaction="<?= h(app_route('blacklist_preview')) ?>">Preview Person</button>
             <button class="btn" type="submit">Add Blacklist Entry</button>
           </form>
+          <script>
+          (function () {
+            var form = document.getElementById('blacklist-add-form');
+            var typeEl = document.getElementById('blacklist-add-type');
+            var valueEl = document.getElementById('blacklist-add-value');
+            if (!form || !typeEl || !valueEl) {
+              return;
+            }
+
+            function applyAddMode() {
+              var mode = String(typeEl.value || 'email');
+              valueEl.setCustomValidity('');
+              valueEl.removeAttribute('pattern');
+              valueEl.removeAttribute('inputmode');
+              valueEl.removeAttribute('title');
+
+              if (mode === 'register_id') {
+                valueEl.placeholder = 'Enter registrar ID (numbers only)';
+                valueEl.setAttribute('pattern', '^[0-9]+$');
+                valueEl.setAttribute('inputmode', 'numeric');
+                valueEl.setAttribute('title', 'Registrar ID must contain numbers only');
+                return;
+              }
+
+              if (mode === 'reason') {
+                valueEl.placeholder = 'Reason keyword (search helper only)';
+                valueEl.setAttribute('title', 'Reason alone cannot identify a person');
+                return;
+              }
+
+              valueEl.placeholder = 'Enter email address';
+              valueEl.setAttribute('pattern', '^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$');
+              valueEl.setAttribute('inputmode', 'email');
+              valueEl.setAttribute('title', 'Enter a valid email address');
+            }
+
+            typeEl.addEventListener('change', applyAddMode);
+            form.addEventListener('submit', function (event) {
+              var mode = String(typeEl.value || 'email');
+              var value = String(valueEl.value || '').trim();
+
+              valueEl.setCustomValidity('');
+              if (value === '') {
+                valueEl.setCustomValidity('Value is required');
+              } else if (mode === 'register_id' && !/^[0-9]+$/.test(value)) {
+                valueEl.setCustomValidity('Registrar ID must contain numbers only');
+              } else if (mode === 'email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+                valueEl.setCustomValidity('Enter a valid email address');
+              } else if (mode === 'reason') {
+                valueEl.setCustomValidity('Reason cannot identify a person by itself. Choose email or registrar ID.');
+              }
+
+              if (!valueEl.checkValidity()) {
+                event.preventDefault();
+                valueEl.reportValidity();
+              }
+            });
+
+            applyAddMode();
+          })();
+          </script>
         <?php else: ?>
           <h4 style="margin-top:10px;">Search Blacklist</h4>
           <form method="get" action="<?= h(app_route('dashboard')) ?>" style="display:flex; gap:8px; flex-wrap:wrap; align-items:end;">
