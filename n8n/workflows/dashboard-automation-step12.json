@@ -1,5 +1,5 @@
 {
-  "name": "Dashboard Automation Step 11 - Branch Guardrails and Rollback Drill",
+  "name": "Dashboard Automation Step 12 - Production Schedule and Runbook Handoff",
   "nodes": [
     {
       "parameters": {},
@@ -190,7 +190,7 @@
       "parameters": {
         "resume": "webhook",
         "options": {
-          "webhookSuffix": "dashboard-step11-approval"
+          "webhookSuffix": "dashboard-step12-approval"
         }
       },
       "id": "12",
@@ -225,21 +225,21 @@
     {
       "parameters": {
         "mode": "raw",
-        "jsonOutput": "={\n  \"status\": \"approved_step11\",\n  \"message\": \"Step 11 complete. Branch guardrails passed and rollback drill verified.\",\n  \"next_step\": \"Production schedule activation and runbook handoff\"\n}"
+        "jsonOutput": "={\n  \"status\": \"approved_step12\",\n  \"message\": \"Step 12 complete. Production schedule activated and runbook handoff approved.\",\n  \"next_step\": \"Steady-state operations\"\n}"
       },
       "id": "14",
-      "name": "Step 11 Complete",
+      "name": "Step 12 Complete",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
       "position": [
-        10230,
+        11670,
         40
       ]
     },
     {
       "parameters": {
         "mode": "raw",
-        "jsonOutput": "={\n  \"status\": \"needs_changes\",\n  \"message\": \"Step 11 stopped: branch policy check, rollback drill, or final approval failed.\"\n}"
+        "jsonOutput": "={\n  \"status\": \"needs_changes\",\n  \"message\": \"Step 12 stopped: schedule activation, snapshot, or handoff approval failed.\"\n}"
       },
       "id": "15",
       "name": "Stop - Needs Changes",
@@ -474,7 +474,7 @@
       "parameters": {
         "resume": "webhook",
         "options": {
-          "webhookSuffix": "dashboard-step11-deploy-approval"
+          "webhookSuffix": "dashboard-step12-deploy-approval"
         }
       },
       "id": "29",
@@ -576,7 +576,7 @@
       "parameters": {
         "resume": "webhook",
         "options": {
-          "webhookSuffix": "dashboard-step11-monitor-approval"
+          "webhookSuffix": "dashboard-step12-monitor-approval"
         }
       },
       "id": "34",
@@ -949,7 +949,7 @@
       "parameters": {
         "resume": "webhook",
         "options": {
-          "webhookSuffix": "dashboard-step11-hardening-approval"
+          "webhookSuffix": "dashboard-step12-hardening-approval"
         }
       }
     },
@@ -960,6 +960,154 @@
       "typeVersion": 2,
       "position": [
         10270,
+        100
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.approved || false }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "58",
+      "name": "Build Production Schedule Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10490,
+        100
+      ],
+      "parameters": {
+        "jsCode": "const base = $('Build Monitoring Registration').first().json || {};\nconst now = new Date();\nconst runAt = new Date(now.getTime() + 10 * 60 * 1000).toISOString();\nreturn [{ json: {\n  task_id: String(base.task_id || ('task-' + Date.now())) + '-schedule',\n  workspace_path: '/opt/homebrew/var/www/TKIF_scholarship',\n  schedule_run_at: runAt,\n  schedule_timezone: 'UTC',\n  release_window_minutes: 30,\n  runbook_owner: $env.DEPLOY_RUNBOOK_OWNER || 'it-admin',\n  changed_files: base.changed_files || []\n} }];"
+      }
+    },
+    {
+      "id": "59",
+      "name": "Activate Production Schedule",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        10710,
+        100
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.TKIF_APP_BASE_URL || \"http://localhost/TKIF_scholarship\") + \"/?page=dashboard_automation_apply\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Worker-Token",
+              "value": "={{ $env.DASHBOARD_AUTOMATION_TOKEN || $env.NOTIFICATION_WORKER_TOKEN || \"\" }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"mode\": \"register_deploy\",\n  \"task_id\": $json.task_id,\n  \"schedule_run_at\": $json.schedule_run_at,\n  \"schedule_timezone\": $json.schedule_timezone,\n  \"release_window_minutes\": $json.release_window_minutes,\n  \"runbook_owner\": $json.runbook_owner,\n  \"changed_files\": $json.changed_files || []\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "60",
+      "name": "Production Schedule Activated?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        10930,
+        100
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.ok === true && ($json.result.ok === true) }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "61",
+      "name": "Prepare Snapshot Before Handoff Approval",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        11150,
+        100
+      ],
+      "parameters": {
+        "jsCode": "const b = $('Build Production Schedule Payload').first().json || {}; return [{ json: { ...b, snapshot_stage: 'pre_runbook_handoff', snapshot_branch: $env.DASHBOARD_AUTOMATION_BRANCH || '', snapshot_remote: $env.DASHBOARD_AUTOMATION_REMOTE || 'origin' } }];"
+      }
+    },
+    {
+      "id": "62",
+      "name": "Commit Push Snapshot Before Handoff Approval",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        11370,
+        100
+      ],
+      "parameters": {
+        "command": "=WORKSPACE='{{$json.workspace_path || '/opt/homebrew/var/www/TKIF_scholarship'}}'\nTASK='{{$json.task_id || 'task-' + Date.now()}}'\nSTAGE='{{$json.snapshot_stage || 'pre_approval'}}'\nBRANCH='{{$json.snapshot_branch || ''}}'\nREMOTE='{{$json.snapshot_remote || 'origin'}}'\nif [ ! -d \"$WORKSPACE\" ]; then\n  printf '{\"snapshot_ok\":false,\"error\":\"workspace_not_found\",\"stage\":\"%s\"}\\n' \"$STAGE\"\n  exit 0\nfi\ncd \"$WORKSPACE\"\nif [ -n \"$BRANCH\" ]; then\n  git checkout \"$BRANCH\" >/tmp/n8n_git_checkout.txt 2>&1 || true\nfi\n\ngit add -A >/tmp/n8n_git_add.txt 2>&1\nif ! git commit --allow-empty -m \"[n8n:$TASK] checkpoint before $STAGE approval\" >/tmp/n8n_git_commit.txt 2>&1; then\n  COMMIT_ERR=$(cat /tmp/n8n_git_commit.txt | sed ':a;N;$!ba;s/\\n/\\\\n/g')\n  printf '{\"snapshot_ok\":false,\"stage\":\"%s\",\"error\":\"commit_failed\",\"details\":\"%s\"}\\n' \"$STAGE\" \"$COMMIT_ERR\"\n  exit 0\nfi\n\nCUR=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')\nSHA=$(git rev-parse HEAD 2>/dev/null || echo '')\nif [ -z \"$CUR\" ] || [ -z \"$REMOTE\" ]; then\n  printf '{\"snapshot_ok\":false,\"stage\":\"%s\",\"error\":\"branch_or_remote_missing\",\"branch\":\"%s\",\"sha\":\"%s\"}\\n' \"$STAGE\" \"$CUR\" \"$SHA\"\n  exit 0\nfi\n\nif git push \"$REMOTE\" \"$CUR\" >/tmp/n8n_git_push.txt 2>&1; then\n  printf '{\"snapshot_ok\":true,\"stage\":\"%s\",\"branch\":\"%s\",\"sha\":\"%s\",\"push_ok\":true}\\n' \"$STAGE\" \"$CUR\" \"$SHA\"\nelse\n  PUSH_ERR=$(cat /tmp/n8n_git_push.txt | sed ':a;N;$!ba;s/\\n/\\\\n/g')\n  printf '{\"snapshot_ok\":false,\"stage\":\"%s\",\"error\":\"push_failed\",\"branch\":\"%s\",\"sha\":\"%s\",\"details\":\"%s\"}\\n' \"$STAGE\" \"$CUR\" \"$SHA\" \"$PUSH_ERR\"\nfi"
+      }
+    },
+    {
+      "id": "63",
+      "name": "Snapshot Before Handoff Approval OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        11590,
+        100
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ JSON.parse($json.stdout || \"{}\").snapshot_ok === true }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "64",
+      "name": "Runbook Handoff Approval Gate",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        11810,
+        100
+      ],
+      "parameters": {
+        "resume": "webhook",
+        "options": {
+          "webhookSuffix": "dashboard-step12-handoff-approval"
+        }
+      }
+    },
+    {
+      "id": "65",
+      "name": "Runbook Handoff Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        12030,
         100
       ],
       "parameters": {
@@ -1677,7 +1825,116 @@
       "main": [
         [
           {
-            "node": "Step 11 Complete",
+            "node": "Build Production Schedule Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop - Needs Changes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Production Schedule Payload": {
+      "main": [
+        [
+          {
+            "node": "Activate Production Schedule",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Activate Production Schedule": {
+      "main": [
+        [
+          {
+            "node": "Production Schedule Activated?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Production Schedule Activated?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Snapshot Before Handoff Approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop - Needs Changes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Snapshot Before Handoff Approval": {
+      "main": [
+        [
+          {
+            "node": "Commit Push Snapshot Before Handoff Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Commit Push Snapshot Before Handoff Approval": {
+      "main": [
+        [
+          {
+            "node": "Snapshot Before Handoff Approval OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Snapshot Before Handoff Approval OK?": {
+      "main": [
+        [
+          {
+            "node": "Runbook Handoff Approval Gate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop - Needs Changes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Runbook Handoff Approval Gate": {
+      "main": [
+        [
+          {
+            "node": "Runbook Handoff Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Runbook Handoff Approved?": {
+      "main": [
+        [
+          {
+            "node": "Step 12 Complete",
             "type": "main",
             "index": 0
           }
@@ -1696,7 +1953,7 @@
     "executionOrder": "v1"
   },
   "pinData": {},
-  "versionId": "11",
+  "versionId": "12",
   "active": false,
   "tags": [
     {
@@ -1706,7 +1963,7 @@
       "name": "automation"
     },
     {
-      "name": "step11"
+      "name": "step12"
     }
   ]
 }

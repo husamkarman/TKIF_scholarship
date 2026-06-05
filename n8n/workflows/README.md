@@ -276,7 +276,7 @@ Step 10 status behavior:
 Safety notes for Step 10:
 - Configure git credentials on n8n worker host in advance.
 - Use protected branches with required reviews where applicable.
-- Snapshot node skips commit when no file changes are detected.
+- Snapshot node performs an allow-empty checkpoint commit to enforce a real push before approval.
 
 ## Step 11: Branch Guardrails + Rollback Drill
 
@@ -309,11 +309,41 @@ Operational notes:
 - Keep `DASHBOARD_AUTOMATION_REMOTE` aligned with your CI release remote.
 - Rollback drill validates reversibility without mutating working tree content.
 
+## Step 12: Production Schedule Activation + Runbook Handoff
+
+Import `dashboard-automation-step12.json` for the twelfth-stage automation path.
+
+What Step 12 adds:
+- Activates production rollout schedule metadata via app deploy hook.
+- Creates a final snapshot commit/push checkpoint before operational handoff.
+- Adds runbook handoff approval gate for steady-state operations transition.
+
+Execution path in Step 12:
+- All Step 11 checks and gates
+- Production schedule payload builder
+- Production schedule activation hook call
+- Pre-handoff snapshot commit/push checkpoint
+- Runbook handoff approval gate
+
+Step 12 approval gates:
+- Pre-apply gate suffix: `dashboard-step12-approval`
+- Deployment gate suffix: `dashboard-step12-deploy-approval`
+- Post-release gate suffix: `dashboard-step12-monitor-approval`
+- Final hardening gate suffix: `dashboard-step12-hardening-approval`
+- Runbook handoff gate suffix: `dashboard-step12-handoff-approval`
+
+Step 12 environment additions:
+- `DEPLOY_RUNBOOK_OWNER` (optional owner label for handoff metadata)
+
+Step 12 status behavior:
+- Success returns `approved_step12`.
+- Schedule/snapshot/handoff failure returns `needs_changes`.
+
 Webhook endpoint expected by PHP app:
 - POST `/webhook/scholarship-submit`
 
 ## Current Status
-- Dashboard automation Step 11 is implemented in `dashboard-automation-step11.json`.
+- Dashboard automation Step 12 is implemented in `dashboard-automation-step12.json`.
 - Submission event workflow remains implemented in `scholarship-submit.json`.
 
 ## Implemented Branches
