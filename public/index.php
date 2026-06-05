@@ -4917,7 +4917,9 @@ if ($page === 'user_role_status_update' && $_SERVER['REQUEST_METHOD'] === 'POST'
   $targetUserId = (int)($_POST['user_id'] ?? 0);
   $targetRole = strtolower(trim((string)($_POST['role'] ?? '')));
   $targetActive = (int)($_POST['is_active'] ?? 1) === 1 ? 1 : 0;
+  $targetEmailVerificationStatus = strtolower(trim((string)($_POST['email_verification_status'] ?? '')));
   $allowedRoles = ['student', 'manager', 'admin', 'it'];
+  $allowedVerificationStatuses = ['verified', 'unverified'];
 
   if ($targetUserId <= 0) {
     $error = 'Invalid user for role/status update.';
@@ -4925,8 +4927,11 @@ if ($page === 'user_role_status_update' && $_SERVER['REQUEST_METHOD'] === 'POST'
   } elseif (!in_array($targetRole, $allowedRoles, true)) {
     $error = 'Invalid target role.';
     $page = 'dashboard';
+  } elseif ($targetEmailVerificationStatus !== '' && !in_array($targetEmailVerificationStatus, $allowedVerificationStatuses, true)) {
+    $error = 'Invalid email verification status.';
+    $page = 'dashboard';
   } else {
-    $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, is_active FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
+    $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, is_active, email_verified_at FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
     $targetStmt->execute([$targetUserId, (int)$actor['tenant_id']]);
     $targetUser = $targetStmt->fetch();
 
@@ -4935,6 +4940,14 @@ if ($page === 'user_role_status_update' && $_SERVER['REQUEST_METHOD'] === 'POST'
     } else {
       $updateStmt = $pdo->prepare('UPDATE users SET role = ?, is_active = ? WHERE id = ? AND tenant_id = ?');
       $updateStmt->execute([$targetRole, $targetActive, $targetUserId, (int)$actor['tenant_id']]);
+
+      if ($targetEmailVerificationStatus === 'verified') {
+        $verificationStmt = $pdo->prepare('UPDATE users SET email_verified_at = COALESCE(email_verified_at, NOW()) WHERE id = ? AND tenant_id = ?');
+        $verificationStmt->execute([$targetUserId, (int)$actor['tenant_id']]);
+      } elseif ($targetEmailVerificationStatus === 'unverified') {
+        $verificationStmt = $pdo->prepare('UPDATE users SET email_verified_at = NULL WHERE id = ? AND tenant_id = ?');
+        $verificationStmt->execute([$targetUserId, (int)$actor['tenant_id']]);
+      }
 
       write_audit_log(
         $pdo,
@@ -4947,10 +4960,14 @@ if ($page === 'user_role_status_update' && $_SERVER['REQUEST_METHOD'] === 'POST'
           'target_email' => (string)($targetUser['email'] ?? ''),
           'new_role' => $targetRole,
           'new_is_active' => $targetActive,
+          'new_email_verification_status' => $targetEmailVerificationStatus,
         ]
       );
 
-      $message = 'User updated: role=' . $targetRole . ', status=' . ($targetActive === 1 ? 'active' : 'disabled') . '.';
+      $emailStatusForMessage = $targetEmailVerificationStatus !== ''
+        ? $targetEmailVerificationStatus
+        : (trim((string)($targetUser['email_verified_at'] ?? '')) !== '' ? 'verified' : 'unverified');
+      $message = 'User updated: role=' . $targetRole . ', status=' . ($targetActive === 1 ? 'active' : 'disabled') . ', email=' . $emailStatusForMessage . '.';
     }
 
     $page = 'dashboard';

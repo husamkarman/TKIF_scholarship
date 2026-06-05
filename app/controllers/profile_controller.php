@@ -25,7 +25,7 @@ function handle_profile_save_request(PDO $pdo, array $actor, array $post): array
     exit('Forbidden');
   }
 
-  $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, is_active FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
+  $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, is_active, email_verified_at FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
   $targetStmt->execute([$targetUserId, $actor['tenant_id']]);
   $targetUser = $targetStmt->fetch();
 
@@ -57,11 +57,13 @@ function handle_profile_save_request(PDO $pdo, array $actor, array $post): array
     $attemptedStatus = strtolower(trim((string)($post['profile_status'] ?? '')));
     $attemptedEmail = normalize_email(trim((string)($post['primary_email'] ?? '')));
     $attemptedProviderId = trim((string)($post['auth_provider_id'] ?? ''));
+    $attemptedEmailVerificationStatus = strtolower(trim((string)($post['email_verification_status'] ?? '')));
 
     $currentRole = strtolower((string)$targetUser['role']);
     $currentStatus = ((int)$targetUser['is_active'] === 1) ? 'active' : 'inactive';
     $currentEmail = normalize_email((string)$targetUser['email']);
     $currentProviderId = trim((string)($currentProfile['auth_provider_id'] ?? ''));
+    $currentEmailVerificationStatus = trim((string)($targetUser['email_verified_at'] ?? '')) !== '' ? 'verified' : 'unverified';
 
     $violations = [];
     if ($attemptedRole !== '' && $attemptedRole !== $currentRole) {
@@ -75,6 +77,9 @@ function handle_profile_save_request(PDO $pdo, array $actor, array $post): array
     }
     if ($attemptedProviderId !== '' && $attemptedProviderId !== $currentProviderId) {
       $violations['auth_provider_id'] = $attemptedProviderId;
+    }
+    if (in_array($attemptedEmailVerificationStatus, ['verified', 'unverified'], true) && $attemptedEmailVerificationStatus !== $currentEmailVerificationStatus) {
+      $violations['email_verification_status'] = $attemptedEmailVerificationStatus;
     }
 
     if ($violations !== []) {
@@ -171,6 +176,15 @@ function handle_profile_save_request(PDO $pdo, array $actor, array $post): array
     if (in_array($userType, $assignableRoles, true)) {
       $roleUpdate = $pdo->prepare('UPDATE users SET role = ? WHERE id = ?');
       $roleUpdate->execute([$userType, $targetUserId]);
+    }
+
+    $emailVerificationStatus = strtolower(trim((string)($post['email_verification_status'] ?? '')));
+    if ($emailVerificationStatus === 'verified') {
+      $verificationUpdate = $pdo->prepare('UPDATE users SET email_verified_at = COALESCE(email_verified_at, NOW()) WHERE id = ?');
+      $verificationUpdate->execute([$targetUserId]);
+    } elseif ($emailVerificationStatus === 'unverified') {
+      $verificationUpdate = $pdo->prepare('UPDATE users SET email_verified_at = NULL WHERE id = ?');
+      $verificationUpdate->execute([$targetUserId]);
     }
 
     $nameStmt = $pdo->prepare('SELECT first_name, middle_name, last_name FROM user_profiles WHERE user_id = ? LIMIT 1');

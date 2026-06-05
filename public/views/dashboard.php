@@ -322,8 +322,8 @@
           $healthStatus = ($queueFailedCount === 0 && $deliveryFailedCount === 0) ? 'Healthy' : 'Needs Attention';
 
           $itUsersSql = $usersBlacklistReady
-            ? 'SELECT id, register_id, full_name, email, role, is_active, blacklist, created_at FROM users WHERE tenant_id = ? ORDER BY id DESC LIMIT 200'
-            : 'SELECT id, register_id, full_name, email, role, is_active, created_at FROM users WHERE tenant_id = ? ORDER BY id DESC LIMIT 200';
+            ? 'SELECT id, register_id, full_name, email, role, is_active, blacklist, email_verified_at, created_at FROM users WHERE tenant_id = ? ORDER BY id DESC LIMIT 200'
+            : 'SELECT id, register_id, full_name, email, role, is_active, email_verified_at, created_at FROM users WHERE tenant_id = ? ORDER BY id DESC LIMIT 200';
           $itUsersStmt = $pdo->prepare($itUsersSql);
           $itUsersStmt->execute([(int)$user['tenant_id']]);
           $itUsers = $itUsersStmt->fetchAll();
@@ -394,7 +394,7 @@
             <p>No users found in this tenant.</p>
           <?php else: ?>
             <table class="table">
-              <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Blacklist</th><th>Role/Status Update</th><th>Blacklist Toggle</th><th>Support Action</th></tr></thead>
+              <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Email Verify</th><th>Role</th><th>Status</th><th>Blacklist</th><th>User Update</th><th>Profile</th><th>Blacklist Toggle</th><th>Support Action</th></tr></thead>
               <tbody>
               <?php foreach ($itUsers as $itUser): ?>
                 <?php
@@ -402,11 +402,13 @@
                   $itRole = (string)($itUser['role'] ?? 'student');
                   $itActive = (int)($itUser['is_active'] ?? 1) === 1;
                   $itFlag = (int)($itUser['blacklist'] ?? 0) === 1;
+                  $itEmailVerified = trim((string)($itUser['email_verified_at'] ?? '')) !== '';
                 ?>
                 <tr>
                   <td><?= (int)($itUser['register_id'] ?? $itUserId) ?></td>
-                  <td><?= h((string)($itUser['full_name'] ?? '')) ?></td>
+                  <td><a href="<?= h(app_route('profile') . '?user_id=' . $itUserId) ?>"><?= h((string)($itUser['full_name'] ?? '')) ?></a></td>
                   <td><?= h((string)($itUser['email'] ?? '')) ?></td>
+                  <td><?= $itEmailVerified ? 'verified' : 'unverified' ?></td>
                   <td><?= h($itRole) ?></td>
                   <td><?= $itActive ? 'active' : 'disabled' ?></td>
                   <td><?= $usersBlacklistReady ? ($itFlag ? 'blacklist (1)' : 'whitelist (0)') : 'n/a' ?></td>
@@ -424,9 +426,14 @@
                         <option value="1" <?= $itActive ? 'selected' : '' ?>>active</option>
                         <option value="0" <?= !$itActive ? 'selected' : '' ?>>disabled</option>
                       </select>
+                      <select name="email_verification_status" required>
+                        <option value="verified" <?= $itEmailVerified ? 'selected' : '' ?>>verified</option>
+                        <option value="unverified" <?= !$itEmailVerified ? 'selected' : '' ?>>unverified</option>
+                      </select>
                       <button class="btn" type="submit">Update</button>
                     </form>
                   </td>
+                  <td><a class="btn" href="<?= h(app_route('profile') . '?user_id=' . $itUserId) ?>">Open Profile</a></td>
                   <td>
                     <?php if ($usersBlacklistReady): ?>
                       <form method="post" action="<?= h(app_route('user_blacklist_toggle')) ?>">

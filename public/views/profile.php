@@ -6,7 +6,7 @@ if (!$canViewProfiles) {
   $targetUserId = (int)$user['id'];
 }
 
-$targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, is_active, created_at FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
+$targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
 $targetStmt->execute([$targetUserId, $user['tenant_id']]);
 $targetUser = $targetStmt->fetch();
 
@@ -173,6 +173,13 @@ else:
         <select name="profile_status" <?= $canControlTarget ? '' : 'disabled' ?>>
           <option value="active" <?= ((int)$targetUser['is_active'] === 1) ? 'selected' : '' ?>>Active</option>
           <option value="inactive" <?= ((int)$targetUser['is_active'] === 0) ? 'selected' : '' ?>>Inactive</option>
+        </select>
+
+        <?php $emailVerificationStatus = trim((string)($targetUser['email_verified_at'] ?? '')) !== '' ? 'verified' : 'unverified'; ?>
+        <label>Email Verification Status <?= lock_badge_html(!$canControlTarget) ?></label>
+        <select name="email_verification_status" <?= $canControlTarget ? '' : 'disabled' ?>>
+          <option value="verified" <?= $emailVerificationStatus === 'verified' ? 'selected' : '' ?>>Verified</option>
+          <option value="unverified" <?= $emailVerificationStatus === 'unverified' ? 'selected' : '' ?>>Unverified</option>
         </select>
       </div>
 
