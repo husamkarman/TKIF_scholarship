@@ -4585,6 +4585,129 @@ if ($page === 'form_builder' && $pdo) {
   }
 }
 
+if ($page === 'forms_library_archive_toggle' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
+  require_csrf();
+  $actor = require_login();
+  if (!in_array((string)$actor['role'], ['admin', 'it'], true)) {
+    http_response_code(403);
+    exit('Forbidden');
+  }
+
+  $formId = (int)($_POST['form_id'] ?? 0);
+  $targetStatus = strtolower(trim((string)($_POST['target_status'] ?? 'archived')));
+  if (!in_array($targetStatus, ['draft', 'archived'], true)) {
+    $targetStatus = 'archived';
+  }
+
+  if ($formId <= 0) {
+    $error = 'Invalid form selection.';
+    $page = 'forms_library';
+  } else {
+    $formsReady = forms_tables_ready($pdo);
+    if ($formsReady) {
+      $stmt = $pdo->prepare('UPDATE forms SET status = ?, updated_at = NOW() WHERE id = ? AND tenant_id = ?');
+      $stmt->execute([$targetStatus, $formId, (int)$actor['tenant_id']]);
+      if ($stmt->rowCount() < 1) {
+        $error = 'Form not found or not accessible.';
+      } else {
+        $message = $targetStatus === 'archived' ? 'Form archived.' : 'Form moved back to draft.';
+      }
+    } else {
+      $legacyStatus = $targetStatus === 'archived' ? 'closed' : 'draft';
+      $stmt = $pdo->prepare('UPDATE scholarships SET status = ? WHERE id = ? AND tenant_id = ?');
+      $stmt->execute([$legacyStatus, $formId, (int)$actor['tenant_id']]);
+      if ($stmt->rowCount() < 1) {
+        $error = 'Legacy form not found or not accessible.';
+      } else {
+        $message = $targetStatus === 'archived' ? 'Legacy form archived (closed).' : 'Legacy form moved back to draft.';
+      }
+    }
+    $page = 'forms_library';
+  }
+}
+
+if ($page === 'forms_library_duplicate' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
+  require_csrf();
+  $actor = require_login();
+  if (!in_array((string)$actor['role'], ['admin', 'it'], true)) {
+    http_response_code(403);
+    exit('Forbidden');
+  }
+
+  $formId = (int)($_POST['form_id'] ?? 0);
+  if ($formId <= 0) {
+    $error = 'Invalid form selection.';
+    $page = 'forms_library';
+  } else {
+    $formsReady = forms_tables_ready($pdo);
+    if ($formsReady) {
+      $sourceStmt = $pdo->prepare('SELECT id, title, description, schema_json, settings_json, theme_json FROM forms WHERE id = ? AND tenant_id = ? LIMIT 1');
+      $sourceStmt->execute([$formId, (int)$actor['tenant_id']]);
+      $source = $sourceStmt->fetch();
+      if (!$source) {
+        $error = 'Form not found or not accessible.';
+      } else {
+        $copyTitle = trim((string)($source['title'] ?? 'Untitled Form')) . ' (Copy)';
+        $insertStmt = $pdo->prepare('INSERT INTO forms (tenant_id, title, description, status, schema_json, settings_json, theme_json, created_by) VALUES (?, ?, ?, "draft", ?, ?, ?, ?)');
+        $insertStmt->execute([
+          (int)$actor['tenant_id'],
+          $copyTitle,
+          (string)($source['description'] ?? ''),
+          (string)($source['schema_json'] ?? '[]'),
+          (string)($source['settings_json'] ?? '{}'),
+          (string)($source['theme_json'] ?? '{}'),
+          (int)$actor['id'],
+        ]);
+        $newFormId = (int)$pdo->lastInsertId();
+
+        $versionStmt = $pdo->prepare('INSERT INTO form_versions (form_id, tenant_id, version_no, status, schema_json, settings_json, theme_json, created_by) VALUES (?, ?, 1, "draft", ?, ?, ?, ?)');
+        $versionStmt->execute([
+          $newFormId,
+          (int)$actor['tenant_id'],
+          (string)($source['schema_json'] ?? '[]'),
+          (string)($source['settings_json'] ?? '{}'),
+          (string)($source['theme_json'] ?? '{}'),
+          (int)$actor['id'],
+        ]);
+
+        $message = 'Form duplicated successfully.';
+      }
+    } else {
+      $sourceStmt = $pdo->prepare('SELECT id, title, description, form_schema_json FROM scholarships WHERE id = ? AND tenant_id = ? LIMIT 1');
+      $sourceStmt->execute([$formId, (int)$actor['tenant_id']]);
+      $source = $sourceStmt->fetch();
+      if (!$source) {
+        $error = 'Legacy form not found or not accessible.';
+      } else {
+        $copyTitle = trim((string)($source['title'] ?? 'Untitled Form')) . ' (Copy)';
+        $insertStmt = $pdo->prepare('INSERT INTO scholarships (tenant_id, title, description, status, form_schema_json, created_by) VALUES (?, ?, ?, "draft", ?, ?)');
+        $insertStmt->execute([
+          (int)$actor['tenant_id'],
+          $copyTitle,
+          (string)($source['description'] ?? ''),
+          (string)($source['form_schema_json'] ?? '[]'),
+          (int)$actor['id'],
+        ]);
+        $newFormId = (int)$pdo->lastInsertId();
+
+        if (scholarship_form_versioning_ready($pdo)) {
+          $versionStmt = $pdo->prepare('INSERT INTO scholarship_form_versions (scholarship_id, tenant_id, version_no, status, form_schema_json, created_by) VALUES (?, ?, 1, "draft", ?, ?)');
+          $versionStmt->execute([
+            $newFormId,
+            (int)$actor['tenant_id'],
+            (string)($source['form_schema_json'] ?? '[]'),
+            (int)$actor['id'],
+          ]);
+        }
+
+        $message = 'Legacy form duplicated successfully.';
+      }
+    }
+
+    $page = 'forms_library';
+  }
+}
+
 if ($page === 'forms_library' && $pdo) {
   $actor = require_login();
   if (!in_array((string)$actor['role'], ['admin', 'it'], true)) {
@@ -4600,35 +4723,69 @@ if ($page === 'forms_library' && $pdo) {
 
   $formsLibraryUsingUnified = forms_tables_ready($pdo);
   if ($formsLibraryUsingUnified) {
-    $sql = 'SELECT id, tenant_id, title, description, status, settings_json, created_at, updated_at FROM forms WHERE tenant_id = ?';
+    $sql = 'SELECT
+              f.id,
+              f.tenant_id,
+              f.title,
+              f.description,
+              f.status,
+              f.settings_json,
+              f.created_at,
+              f.updated_at,
+              COALESCE(fs.response_count, 0) AS response_count,
+              fs.last_response_at
+            FROM forms f
+            LEFT JOIN (
+              SELECT form_id, COUNT(*) AS response_count, MAX(submitted_at) AS last_response_at
+              FROM form_submissions
+              GROUP BY form_id
+            ) fs ON fs.form_id = f.id
+            WHERE f.tenant_id = ?';
     $params = [(int)$actor['tenant_id']];
     if ($formsLibraryStatus !== 'all') {
-      $sql .= ' AND status = ?';
+      $sql .= ' AND f.status = ?';
       $params[] = $formsLibraryStatus;
     }
     if ($formsLibrarySearch !== '') {
-      $sql .= ' AND (LOWER(title) LIKE ? OR LOWER(COALESCE(description, "")) LIKE ?)';
+      $sql .= ' AND (LOWER(f.title) LIKE ? OR LOWER(COALESCE(f.description, "")) LIKE ?)';
       $params[] = '%' . strtolower($formsLibrarySearch) . '%';
       $params[] = '%' . strtolower($formsLibrarySearch) . '%';
     }
-    $sql .= ' ORDER BY updated_at DESC, id DESC LIMIT 500';
+    $sql .= ' ORDER BY f.updated_at DESC, f.id DESC LIMIT 500';
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
     $formsLibraryRows = $stmt->fetchAll();
   } else {
-    $sql = 'SELECT id, tenant_id, title, description, status, form_schema_json, created_at, created_at AS updated_at FROM scholarships WHERE tenant_id = ?';
+    $sql = 'SELECT
+              s.id,
+              s.tenant_id,
+              s.title,
+              s.description,
+              s.status,
+              s.form_schema_json,
+              s.created_at,
+              s.created_at AS updated_at,
+              COALESCE(a.response_count, 0) AS response_count,
+              a.last_response_at
+            FROM scholarships s
+            LEFT JOIN (
+              SELECT scholarship_id, COUNT(*) AS response_count, MAX(created_at) AS last_response_at
+              FROM applications
+              GROUP BY scholarship_id
+            ) a ON a.scholarship_id = s.id
+            WHERE s.tenant_id = ?';
     $params = [(int)$actor['tenant_id']];
     if ($formsLibraryStatus !== 'all') {
       $legacyStatus = $formsLibraryStatus === 'archived' ? 'closed' : $formsLibraryStatus;
-      $sql .= ' AND status = ?';
+      $sql .= ' AND s.status = ?';
       $params[] = $legacyStatus;
     }
     if ($formsLibrarySearch !== '') {
-      $sql .= ' AND (LOWER(title) LIKE ? OR LOWER(COALESCE(description, "")) LIKE ?)';
+      $sql .= ' AND (LOWER(s.title) LIKE ? OR LOWER(COALESCE(s.description, "")) LIKE ?)';
       $params[] = '%' . strtolower($formsLibrarySearch) . '%';
       $params[] = '%' . strtolower($formsLibrarySearch) . '%';
     }
-    $sql .= ' ORDER BY id DESC LIMIT 500';
+    $sql .= ' ORDER BY s.id DESC LIMIT 500';
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
     $formsLibraryRows = $stmt->fetchAll();
