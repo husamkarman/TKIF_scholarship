@@ -4791,6 +4791,7 @@ if ($page === 'forms_library' && $pdo) {
               f.description,
               f.status,
               f.settings_json,
+              f.theme_json,
               f.created_at,
               f.updated_at,
               COALESCE(fs.response_count, 0) AS response_count,
@@ -4876,6 +4877,7 @@ if ($page === 'forms_library' && $pdo) {
     $formsLibraryRows = $stmt->fetchAll();
     foreach ($formsLibraryRows as &$legacyFormRow) {
       $legacyFormRow['settings_json'] = '{"builder_type":"scholarship"}';
+      $legacyFormRow['theme_json'] = '{}';
     }
     unset($legacyFormRow);
   }

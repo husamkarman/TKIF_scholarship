@@ -215,6 +215,47 @@ input, textarea, select {
   color: var(--form-text, #456);
 }
 
+.form-theme-swatch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background: var(--theme-background, #f5f6f7);
+  color: var(--theme-text, #1f2328);
+  font-family: var(--theme-font, "Segoe UI", Tahoma, Geneva, Verdana, sans-serif);
+}
+
+.form-theme-swatch .swatch-chip {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.2);
+}
+
+.form-theme-swatch .swatch-bg {
+  background: var(--theme-background, #f5f6f7);
+}
+
+.form-theme-swatch .swatch-surface {
+  background: var(--theme-surface, #ffffff);
+}
+
+.form-theme-swatch .swatch-primary {
+  background: var(--theme-primary, #1f6feb);
+}
+
+.form-theme-swatch .swatch-accent {
+  background: var(--theme-accent, #2da44e);
+}
+
+.form-theme-swatch .swatch-font {
+  font-size: 11px;
+  margin-left: 4px;
+  opacity: 0.85;
+}
+
 @media (max-width: 768px) {
   .container {
     margin: 10px;

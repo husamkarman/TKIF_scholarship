@@ -43,7 +43,7 @@ $usingUnified = (bool)($formsLibraryUsingUnified ?? false);
     <p>No forms found for current filter.</p>
   <?php else: ?>
     <table class="table">
-      <thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Published Ver</th><th>Responses</th><th>Last Response</th><th>Updated</th><th>Actions</th></tr></thead>
+      <thead><tr><th>ID</th><th>Title</th><th>Theme</th><th>Status</th><th>Published Ver</th><th>Responses</th><th>Last Response</th><th>Updated</th><th>Actions</th></tr></thead>
       <tbody>
       <?php foreach ($forms as $form): ?>
         <?php
@@ -59,12 +59,28 @@ $usingUnified = (bool)($formsLibraryUsingUnified ?? false);
           if (!in_array($builderType, ['scholarship', 'survey', 'quiz'], true)) {
             $builderType = 'scholarship';
           }
+          $theme = normalize_form_theme(json_decode((string)($form['theme_json'] ?? '{}'), true));
+          $themeSwatchStyle = '--theme-primary:' . (string)$theme['primary_color']
+            . ';--theme-accent:' . (string)$theme['accent_color']
+            . ';--theme-background:' . (string)$theme['background_color']
+            . ';--theme-surface:' . (string)$theme['surface_color']
+            . ';--theme-text:' . (string)$theme['text_color']
+            . ';--theme-font:' . (string)$theme['font_family'] . ';';
           $archiveTarget = $formStatus === 'archived' ? 'draft' : 'archived';
           $archiveLabel = $formStatus === 'archived' ? 'Unarchive' : 'Archive';
         ?>
         <tr>
           <td>#<?= $formId ?></td>
           <td><?= h($formTitle) ?></td>
+          <td>
+            <div class="form-theme-swatch" style="<?= h($themeSwatchStyle) ?>" title="<?= h((string)$theme['font_family']) ?>">
+              <span class="swatch-chip swatch-bg"></span>
+              <span class="swatch-chip swatch-surface"></span>
+              <span class="swatch-chip swatch-primary"></span>
+              <span class="swatch-chip swatch-accent"></span>
+              <span class="swatch-font"><?= h((string)$theme['font_family']) ?></span>
+            </div>
+          </td>
           <td><?= h($formStatus) ?></td>
           <td><?= $latestPublishedVersionNo > 0 ? ('v' . (string)$latestPublishedVersionNo) : '-' ?></td>
           <td><?= $responseCount ?></td>
