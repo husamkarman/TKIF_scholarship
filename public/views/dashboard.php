@@ -4,6 +4,7 @@
 <?php if ($pdo): ?>
   <?php
     $applicationPhoneCountries = phone_country_codes_ready($pdo) ? phone_country_code_rows($pdo, true) : [];
+    $usersBlacklistReady = users_blacklist_column_ready($pdo);
   ?>
   <?php if ($user['role'] === 'student'): ?>
     <?php
@@ -16,15 +17,27 @@
         <div class="card">
           <h3><?= h($s['title']) ?></h3>
           <p><?= h((string)$s['description']) ?></p>
-          <form method="post" action="/?page=apply" class="scholarship-apply-form" data-scholarship-id="<?= (int)$s['id'] ?>">
+          <?php
+            $rawSchemaPayload = json_decode((string)$s['form_schema_json'], true);
+            $settings = scholarship_form_settings_from_raw($rawSchemaPayload);
+            $autosaveSeconds = (int)($settings['autosave_interval_seconds'] ?? 30);
+            if ($autosaveSeconds < 5) {
+              $autosaveSeconds = 30;
+            }
+          ?>
+          <form method="post" action="<?= h(app_route('apply')) ?>" class="scholarship-apply-form" data-scholarship-id="<?= (int)$s['id'] ?>" data-autosave-seconds="<?= (int)$autosaveSeconds ?>">
             <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
             <input type="hidden" name="scholarship_id" value="<?= (int)$s['id'] ?>">
             <?php
-              $schema = normalize_form_schema(json_decode((string)$s['form_schema_json'], true));
+              $nodes = normalize_scholarship_nodes($rawSchemaPayload);
+              $schema = flatten_scholarship_nodes($nodes);
               foreach ($schema as $field) {
                   render_dynamic_field($field, [], $applicationPhoneCountries);
               }
             ?>
+            <?php if (captcha_is_enabled($config)): ?>
+              <?= captcha_widget_markup($config) ?>
+            <?php endif; ?>
             <br>
             <button class="btn primary" type="submit">Submit Application</button>
           </form>
@@ -37,6 +50,32 @@
       $schStmt = $pdo->prepare('SELECT id, title, description, status, form_schema_json, created_at FROM scholarships WHERE tenant_id = ? ORDER BY id DESC LIMIT 50');
       $schStmt->execute([$user['tenant_id']]);
       $scholarshipsForAdmin = $schStmt->fetchAll();
+
+      $notificationJobs = [];
+      if (function_exists('notification_jobs_ready') && notification_jobs_ready($pdo)) {
+        $jobStmt = $pdo->prepare(
+          'SELECT id, event_name, status, attempts, max_attempts, last_error, updated_at
+           FROM notification_jobs
+           WHERE tenant_id = ?
+           ORDER BY id DESC
+           LIMIT 30'
+        );
+        $jobStmt->execute([$user['tenant_id']]);
+        $notificationJobs = $jobStmt->fetchAll();
+      }
+
+      $notificationDeliveries = [];
+      if (function_exists('notification_inbox_ready') && notification_inbox_ready($pdo)) {
+        $deliveryStmt = $pdo->prepare(
+          'SELECT id, event_name, delivery_route, status, error_message, received_at
+           FROM notification_inbox
+           WHERE tenant_id = ? AND user_agent = "internal-worker"
+           ORDER BY id DESC
+           LIMIT 30'
+        );
+        $deliveryStmt->execute([$user['tenant_id']]);
+        $notificationDeliveries = $deliveryStmt->fetchAll();
+      }
 
       $scholarshipVersions = [];
       if (function_exists('scholarship_form_versioning_ready') && scholarship_form_versioning_ready($pdo)) {
@@ -61,10 +100,11 @@
 
       <div class="card" style="margin-bottom: 14px;">
         <h3>Create Scholarship</h3>
-        <form method="post" action="/?page=create_scholarship" id="create-scholarship-form">
+        <form method="post" action="<?= h(app_route('create_scholarship')) ?>" id="create-scholarship-form">
           <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
           <input type="hidden" name="scholarship_id" id="scholarship_id" value="0">
           <input type="hidden" name="form_schema_json" id="form_schema_json" value="[]">
+          <input type="hidden" name="form_settings_json" id="form_settings_json" value="{}">
 
           <p id="scholarship-editor-mode"><strong>Mode:</strong> Create new scholarship</p>
 
@@ -83,11 +123,32 @@
 
           <p style="margin-top:8px; color:#555;">When editing an existing scholarship, each save creates a new form version.</p>
 
-          <h4>Form Fields</h4>
+          <h4>Form Settings</h4>
+          <div class="grid">
+            <label><input type="checkbox" id="setting_one_response_per_user"> One response per user</label>
+            <label><input type="checkbox" id="setting_allow_edit_after_submit"> Allow edit after submit</label>
+            <div>
+              <label>Autosave interval (seconds)</label>
+              <input id="setting_autosave_interval_seconds" type="number" min="5" max="300" value="30">
+            </div>
+            <div>
+              <label>Submission start</label>
+              <input id="setting_submission_start_at" type="datetime-local">
+            </div>
+            <div>
+              <label>Submission end</label>
+              <input id="setting_submission_end_at" type="datetime-local">
+            </div>
+          </div>
+
+          <h4>Page Nodes</h4>
           <div id="fields-builder"></div>
-          <button class="btn" type="button" id="add-field-btn">Add Field</button>
+          <button class="btn" type="button" id="add-field-btn">Add Node</button>
           <button class="btn" type="button" id="reset-scholarship-editor">Reset Editor</button>
           <button class="btn primary" type="submit" id="save-scholarship-btn">Save Scholarship</button>
+
+          <h4 style="margin-top:14px;">Live Preview (Section Flow)</h4>
+          <div id="scholarship-form-preview" class="card" style="background:#fff;"></div>
         </form>
       </div>
 
@@ -137,7 +198,7 @@
                 <td><?= h((string)$ver['created_at']) ?></td>
                 <td>
                   <?php if ((string)$ver['status'] !== 'published'): ?>
-                    <form method="post" action="/?page=publish_scholarship_version">
+                    <form method="post" action="<?= h(app_route('publish_scholarship_version')) ?>">
                       <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
                       <input type="hidden" name="scholarship_id" value="<?= (int)$ver['scholarship_id'] ?>">
                       <input type="hidden" name="version_no" value="<?= (int)$ver['version_no'] ?>">
@@ -157,8 +218,8 @@
     <?php if (in_array($user['role'], ['admin', 'it'], true)): ?>
       <div class="card" style="margin-bottom: 14px;">
         <h3>Blacklist Management</h3>
-        <p>For already-registered users, use Registration ID or email. For non-registered persons, use email only. Use Preview Person before adding the blacklist row.</p>
-        <form method="post" action="/?page=blacklist_add">
+        <p>Admin and IT use global Registration ID (users.register_id) or email across all tenants. For non-registered persons, use email only. Use Preview Person before adding the blacklist row.</p>
+        <form method="post" action="<?= h(app_route('blacklist_add')) ?>">
           <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
           <label>Registration ID (use for registered users, optional if email is provided)</label>
           <input type="number" name="register_id" min="1" placeholder="e.g. 125" value="<?= h((string)($blacklistForm['register_id'] ?? '')) ?>">
@@ -167,7 +228,7 @@
           <label>Reason (optional)</label>
           <input name="reason" placeholder="Example: Fraud attempt / Duplicate identity" value="<?= h((string)($blacklistForm['reason'] ?? '')) ?>">
           <br>
-          <button class="btn" type="submit" formaction="/?page=blacklist_preview">Preview Person</button>
+          <button class="btn" type="submit" formaction="<?= h(app_route('blacklist_preview')) ?>">Preview Person</button>
           <button class="btn" type="submit">Add Blacklist Entry</button>
         </form>
 
@@ -178,14 +239,26 @@
               <?php $previewUser = $blacklistPreview['user']; ?>
               <p>Matched registered user by <?= h((string)($blacklistPreview['matched_by'] ?? 'input')) ?>. Review this person before blacklisting.</p>
               <table class="table">
-                <thead><tr><th>register_id</th><th>Name</th><th>Email</th><th>Role</th><th>Created</th></tr></thead>
+                <thead><tr><th>register_id</th><th>Name</th><th>Email</th><th>Role</th><th>Created</th><?php if ($usersBlacklistReady): ?><th>Flag</th><th>Action</th><?php endif; ?></tr></thead>
                 <tbody>
                   <tr>
-                    <td><?= (int)($previewUser['id'] ?? 0) ?></td>
+                    <td><?= (int)($previewUser['register_id'] ?? $previewUser['id'] ?? 0) ?></td>
                     <td><?= h((string)($previewUser['full_name'] ?? '')) ?></td>
                     <td><?= h((string)($previewUser['email'] ?? '')) ?></td>
                     <td><?= h((string)($previewUser['role'] ?? '')) ?></td>
                     <td><?= h((string)($previewUser['created_at'] ?? '')) ?></td>
+                    <?php if ($usersBlacklistReady): ?>
+                      <?php $previewFlag = (int)($previewUser['blacklist'] ?? 0); ?>
+                      <td><?= $previewFlag === 1 ? 'blacklist (1)' : 'whitelist (0)' ?></td>
+                      <td>
+                        <form method="post" action="<?= h(app_route('user_blacklist_toggle')) ?>">
+                          <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+                          <input type="hidden" name="user_id" value="<?= (int)($previewUser['id'] ?? 0) ?>">
+                          <input type="hidden" name="blacklist" value="<?= $previewFlag === 1 ? 0 : 1 ?>">
+                          <button class="btn" type="submit"><?= $previewFlag === 1 ? 'Move to Whitelist' : 'Move to Blacklist' ?></button>
+                        </form>
+                      </td>
+                    <?php endif; ?>
                   </tr>
                 </tbody>
               </table>
@@ -201,7 +274,7 @@
 
         <h4 style="margin-top:14px;">Import Excel/CSV</h4>
         <p>Headers supported: register_id,email,reason (reason optional)</p>
-        <form method="post" action="/?page=blacklist_import" enctype="multipart/form-data">
+        <form method="post" action="<?= h(app_route('blacklist_import')) ?>" enctype="multipart/form-data">
           <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
           <input type="file" name="blacklist_file" accept=".csv,.xlsx" required>
           <button class="btn" type="submit">Import Blacklist File</button>
@@ -210,15 +283,17 @@
 
       <div class="card" style="margin-bottom: 14px;">
         <h3>Admin Support Tools</h3>
-        <form method="post" action="/?page=admin_user_support">
+        <form method="post" action="<?= h(app_route('admin_user_support')) ?>">
           <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
           <label>Target User Email</label>
           <input type="email" name="target_email" value="<?= h((string)($adminSupportTargetEmail ?? '')) ?>" required>
           <label>Action</label>
           <select name="support_action" required>
             <option value="verification_attempts">View Verification Attempts</option>
+            <option value="login_lockout_status">View Login Lockout Status</option>
             <option value="resend_verification">Resend Verification</option>
             <option value="unlock_user">Unlock User Account</option>
+            <option value="clear_login_lockout">Clear Login Lockout</option>
           </select>
           <br>
           <button class="btn" type="submit">Run Support Action</button>
@@ -241,6 +316,82 @@
             </tbody>
           </table>
         <?php endif; ?>
+
+        <?php if (is_array($adminLoginAttemptSummary ?? null)): ?>
+          <h4 style="margin-top: 12px;">Login Lockout Snapshot</h4>
+          <p>
+            Status:
+            <strong><?= (($adminLoginAttemptSummary['enabled'] ?? false) && ($adminLoginAttemptSummary['is_locked'] ?? false)) ? 'LOCKED' : 'Not Locked' ?></strong>
+            | Failed in window: <strong><?= (int)($adminLoginAttemptSummary['failed_count'] ?? 0) ?></strong>
+            | Success in window: <strong><?= (int)($adminLoginAttemptSummary['success_count'] ?? 0) ?></strong>
+            | Threshold: <strong><?= (int)($adminLoginAttemptSummary['threshold'] ?? 0) ?></strong>
+            | Window: <strong><?= (int)($adminLoginAttemptSummary['window_seconds'] ?? 0) ?>s</strong>
+          </p>
+          <p>Last failed login: <strong><?= h((string)($adminLoginAttemptSummary['last_failed_at'] ?? 'n/a')) ?></strong></p>
+
+          <?php if (!empty($adminLoginAttemptRows)): ?>
+            <table class="table">
+              <thead><tr><th>ID</th><th>IP</th><th>Result</th><th>Created</th></tr></thead>
+              <tbody>
+              <?php foreach ($adminLoginAttemptRows as $row): ?>
+                <tr>
+                  <td><?= (int)($row['id'] ?? 0) ?></td>
+                  <td><?= h((string)($row['ip_address'] ?? '')) ?></td>
+                  <td><?= ((int)($row['success'] ?? 0) === 1) ? 'success' : 'failed' ?></td>
+                  <td><?= h((string)($row['created_at'] ?? '')) ?></td>
+                </tr>
+              <?php endforeach; ?>
+              </tbody>
+            </table>
+          <?php endif; ?>
+        <?php endif; ?>
+      </div>
+
+      <div class="card" style="margin-bottom: 14px;">
+        <h3>Outbound Push Logs (N8N)</h3>
+        <p>Queue status and outbound delivery outcomes for this tenant.</p>
+
+        <h4>Queue Jobs</h4>
+        <?php if ($notificationJobs === []): ?>
+          <p>No queue jobs yet.</p>
+        <?php else: ?>
+          <table class="table">
+            <thead><tr><th>ID</th><th>Event</th><th>Status</th><th>Attempts</th><th>Last Error</th><th>Updated</th></tr></thead>
+            <tbody>
+            <?php foreach ($notificationJobs as $job): ?>
+              <tr>
+                <td><?= (int)($job['id'] ?? 0) ?></td>
+                <td><?= h((string)($job['event_name'] ?? '')) ?></td>
+                <td><?= h((string)($job['status'] ?? '')) ?></td>
+                <td><?= (int)($job['attempts'] ?? 0) ?>/<?= (int)($job['max_attempts'] ?? 0) ?></td>
+                <td><?= h((string)($job['last_error'] ?? '')) ?></td>
+                <td><?= h((string)($job['updated_at'] ?? '')) ?></td>
+              </tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+        <?php endif; ?>
+
+        <h4 style="margin-top:12px;">Delivery Log</h4>
+        <?php if ($notificationDeliveries === []): ?>
+          <p>No outbound deliveries yet.</p>
+        <?php else: ?>
+          <table class="table">
+            <thead><tr><th>ID</th><th>Event</th><th>Route</th><th>Status</th><th>Error</th><th>Time</th></tr></thead>
+            <tbody>
+            <?php foreach ($notificationDeliveries as $entry): ?>
+              <tr>
+                <td><?= (int)($entry['id'] ?? 0) ?></td>
+                <td><?= h((string)($entry['event_name'] ?? '')) ?></td>
+                <td><?= h((string)($entry['delivery_route'] ?? '')) ?></td>
+                <td><?= h((string)($entry['status'] ?? '')) ?></td>
+                <td><?= h((string)($entry['error_message'] ?? '')) ?></td>
+                <td><?= h((string)($entry['received_at'] ?? '')) ?></td>
+              </tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+        <?php endif; ?>
       </div>
     <?php endif; ?>
     <?php
@@ -253,16 +404,21 @@
       $stmt->execute([$user['tenant_id']]);
       $applications = $stmt->fetchAll();
 
-      $newUsersStmt = $pdo->prepare('SELECT id, full_name, email, role, created_at FROM users WHERE tenant_id = ? AND created_at >= (NOW() - INTERVAL 7 DAY) ORDER BY id DESC LIMIT 30');
+      $newUsersSql = $usersBlacklistReady
+        ? 'SELECT id, register_id, full_name, email, role, blacklist, created_at FROM users WHERE tenant_id = ? AND created_at >= (NOW() - INTERVAL 7 DAY) ORDER BY id DESC LIMIT 30'
+        : 'SELECT id, register_id, full_name, email, role, created_at FROM users WHERE tenant_id = ? AND created_at >= (NOW() - INTERVAL 7 DAY) ORDER BY id DESC LIMIT 30';
+      $newUsersStmt = $pdo->prepare($newUsersSql);
       $newUsersStmt->execute([$user['tenant_id']]);
       $newUsers = $newUsersStmt->fetchAll();
 
-      $oldUsersStmt = $pdo->prepare('SELECT id, full_name, email, role, created_at FROM users WHERE tenant_id = ? AND created_at < (NOW() - INTERVAL 7 DAY) ORDER BY id DESC LIMIT 30');
+      $oldUsersSql = $usersBlacklistReady
+        ? 'SELECT id, register_id, full_name, email, role, blacklist, created_at FROM users WHERE tenant_id = ? AND created_at < (NOW() - INTERVAL 7 DAY) ORDER BY id DESC LIMIT 30'
+        : 'SELECT id, register_id, full_name, email, role, created_at FROM users WHERE tenant_id = ? AND created_at < (NOW() - INTERVAL 7 DAY) ORDER BY id DESC LIMIT 30';
+      $oldUsersStmt = $pdo->prepare($oldUsersSql);
       $oldUsersStmt->execute([$user['tenant_id']]);
       $oldUsers = $oldUsersStmt->fetchAll();
 
-      $blacklistStmt = $pdo->prepare('SELECT register_id, email_original, reason, created_at FROM blacklist_entries WHERE tenant_id = ? ORDER BY id ASC LIMIT 50');
-      $blacklistStmt->execute([$user['tenant_id']]);
+      $blacklistStmt = $pdo->query('SELECT register_id, email_original, reason, created_at FROM blacklist_entries ORDER BY id ASC LIMIT 100');
       $blacklistRows = $blacklistStmt->fetchAll();
 
       $notificationRows = [];
@@ -277,19 +433,44 @@
         $notificationStmt->execute([$user['tenant_id']]);
         $notificationRows = $notificationStmt->fetchAll();
       }
+
+      $adminSupportAuditRows = [];
+      if (in_array($user['role'], ['admin', 'it'], true)) {
+        $supportAuditStmt = $pdo->prepare(
+          'SELECT id, event_name, actor_user_id, entity_id, details_json, created_at
+           FROM audit_logs
+           WHERE tenant_id = ? AND event_name LIKE "admin_support_%"
+           ORDER BY id DESC
+           LIMIT 60'
+        );
+        $supportAuditStmt->execute([(int)$user['tenant_id']]);
+        $adminSupportAuditRows = $supportAuditStmt->fetchAll();
+      }
     ?>
     <div class="grid" style="margin-bottom: 14px;">
       <div class="card">
         <h3>New Registrations (7 days)</h3>
         <table class="table">
-          <thead><tr><th>register_id</th><th>Name</th><th>Email</th><th>Role</th></tr></thead>
+          <thead><tr><th>register_id</th><th>Name</th><th>Email</th><th>Role</th><?php if ($usersBlacklistReady): ?><th>Flag</th><th>Action</th><?php endif; ?></tr></thead>
           <tbody>
           <?php foreach ($newUsers as $u): ?>
             <tr>
-              <td><?= (int)$u['id'] ?></td>
+              <td><?= (int)($u['register_id'] ?? $u['id']) ?></td>
               <td><?= h($u['full_name']) ?></td>
               <td><?= h($u['email']) ?></td>
               <td><?= h($u['role']) ?></td>
+              <?php if ($usersBlacklistReady): ?>
+                <?php $rowFlag = (int)($u['blacklist'] ?? 0); ?>
+                <td><?= $rowFlag === 1 ? 'blacklist (1)' : 'whitelist (0)' ?></td>
+                <td>
+                  <form method="post" action="<?= h(app_route('user_blacklist_toggle')) ?>">
+                    <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+                    <input type="hidden" name="user_id" value="<?= (int)$u['id'] ?>">
+                    <input type="hidden" name="blacklist" value="<?= $rowFlag === 1 ? 0 : 1 ?>">
+                    <button class="btn" type="submit"><?= $rowFlag === 1 ? 'Whitelist' : 'Blacklist' ?></button>
+                  </form>
+                </td>
+              <?php endif; ?>
             </tr>
           <?php endforeach; ?>
           </tbody>
@@ -298,20 +479,56 @@
       <div class="card">
         <h3>Old Registrations</h3>
         <table class="table">
-          <thead><tr><th>register_id</th><th>Name</th><th>Email</th><th>Role</th></tr></thead>
+          <thead><tr><th>register_id</th><th>Name</th><th>Email</th><th>Role</th><?php if ($usersBlacklistReady): ?><th>Flag</th><th>Action</th><?php endif; ?></tr></thead>
           <tbody>
           <?php foreach ($oldUsers as $u): ?>
             <tr>
-              <td><?= (int)$u['id'] ?></td>
+              <td><?= (int)($u['register_id'] ?? $u['id']) ?></td>
               <td><?= h($u['full_name']) ?></td>
               <td><?= h($u['email']) ?></td>
               <td><?= h($u['role']) ?></td>
+              <?php if ($usersBlacklistReady): ?>
+                <?php $rowFlag = (int)($u['blacklist'] ?? 0); ?>
+                <td><?= $rowFlag === 1 ? 'blacklist (1)' : 'whitelist (0)' ?></td>
+                <td>
+                  <form method="post" action="<?= h(app_route('user_blacklist_toggle')) ?>">
+                    <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+                    <input type="hidden" name="user_id" value="<?= (int)$u['id'] ?>">
+                    <input type="hidden" name="blacklist" value="<?= $rowFlag === 1 ? 0 : 1 ?>">
+                    <button class="btn" type="submit"><?= $rowFlag === 1 ? 'Whitelist' : 'Blacklist' ?></button>
+                  </form>
+                </td>
+              <?php endif; ?>
             </tr>
           <?php endforeach; ?>
           </tbody>
         </table>
       </div>
     </div>
+
+      <div class="card" style="margin-bottom: 14px;">
+        <h3>Admin Support Audit Events</h3>
+        <p>Privileged support actions are logged for traceability.</p>
+        <?php if ($adminSupportAuditRows === []): ?>
+          <p>No admin support audit events yet.</p>
+        <?php else: ?>
+          <table class="table">
+            <thead><tr><th>ID</th><th>Event</th><th>Actor</th><th>Target User ID</th><th>Details</th><th>Created</th></tr></thead>
+            <tbody>
+            <?php foreach ($adminSupportAuditRows as $row): ?>
+              <tr>
+                <td><?= (int)($row['id'] ?? 0) ?></td>
+                <td><?= h((string)($row['event_name'] ?? '')) ?></td>
+                <td><?= (int)($row['actor_user_id'] ?? 0) ?></td>
+                <td><?= (int)($row['entity_id'] ?? 0) ?></td>
+                <td><?= h((string)($row['details_json'] ?? '')) ?></td>
+                <td><?= h((string)($row['created_at'] ?? '')) ?></td>
+              </tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+        <?php endif; ?>
+      </div>
 
     <div class="card" style="margin-bottom:14px;">
       <h3>Blacklist Table</h3>
@@ -375,7 +592,7 @@
             <td><?= h($a['created_at']) ?></td>
             <?php if (in_array($user['role'], ['admin', 'manager'], true)): ?>
               <td>
-                <form method="post" action="/?page=decide">
+                <form method="post" action="<?= h(app_route('decide')) ?>">
                   <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
                   <input type="hidden" name="application_id" value="<?= (int)$a['id'] ?>">
                   <select name="status">

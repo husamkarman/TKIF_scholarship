@@ -1,0 +1,192 @@
+{
+  "name": "TKIF Outbound Push Receiver",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "tkif-outbound-push",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "1",
+      "name": "TKIF Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 300],
+      "webhookId": "tkif-outbound-push"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\n\nconst secret = $env.TKIF_OUTBOUND_SECRET || '';\nconst headers = $json.headers || {};\nconst timestamp = headers['x-tkif-timestamp'] || headers['X-TKIF-Timestamp'] || '';\nconst signature = headers['x-tkif-signature'] || headers['X-TKIF-Signature'] || '';\n\nif (!secret) {\n  return [{ json: { verified: false, error: 'Missing TKIF_OUTBOUND_SECRET in n8n environment' } }];\n}\nif (!timestamp || !signature) {\n  return [{ json: { verified: false, error: 'Missing X-TKIF-Timestamp or X-TKIF-Signature' } }];\n}\n\nconst now = Math.floor(Date.now() / 1000);\nconst ts = Number(timestamp);\nif (!Number.isFinite(ts)) {\n  return [{ json: { verified: false, error: 'Invalid X-TKIF-Timestamp' } }];\n}\n\nconst toleranceSeconds = Number($env.TKIF_HMAC_TOLERANCE_SECONDS || '300');\nif (Math.abs(now - ts) > toleranceSeconds) {\n  return [{ json: { verified: false, error: 'Expired signature timestamp' } }];\n}\n\nlet rawBody = $json.body;\nif (typeof rawBody !== 'string') {\n  rawBody = JSON.stringify(rawBody || {});\n}\n\nconst expected = 'sha256=' + crypto.createHmac('sha256', secret).update(`${timestamp}.${rawBody}`).digest('hex');\nif (expected.length !== signature.length || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))) {\n  return [{ json: { verified: false, error: 'Invalid signature' } }];\n}\n\nlet payload;\ntry {\n  payload = typeof $json.body === 'string' ? JSON.parse($json.body) : ($json.body || {});\n} catch (e) {\n  return [{ json: { verified: false, error: 'Invalid JSON payload' } }];\n}\n\nreturn [{\n  json: {\n    verified: true,\n    route: headers['x-tkif-route'] || headers['X-TKIF-Route'] || '',\n    event: payload.event || 'unknown',\n    correlation_id: payload.correlation_id || '',\n    tenant_id: payload.tenant_id || null,\n    application_id: payload.application_id || null,\n    payload\n  }\n}];"
+      },
+      "id": "2",
+      "name": "Verify TKIF Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.verified }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "3",
+      "name": "Verified?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [760, 300]
+    },
+    {
+      "parameters": {
+        "propertyName": "event",
+        "rules": {
+          "values": [
+            { "operation": "equal", "value": "application_submitted" },
+            { "operation": "equal", "value": "application_approved" },
+            { "operation": "equal", "value": "application_rejected" },
+            { "operation": "equal", "value": "application_rejected_blacklist" }
+          ]
+        },
+        "options": {
+          "fallbackOutput": 5
+        }
+      },
+      "id": "4",
+      "name": "Route By Event",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [980, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "const p = $json.payload || {};\nreturn [{ json: { workflow: 'application_submitted', tenant_id: p.tenant_id || null, application_id: p.application_id || null, scholarship_id: p.scholarship_id || null, scholarship_title: p.scholarship_title || '', student_id: p.student_id || null, student_email: p.student_email || '', submitted_at: p.submitted_at || '', correlation_id: p.correlation_id || '' } }];"
+      },
+      "id": "5",
+      "name": "Handle Submitted",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1230, 60]
+    },
+    {
+      "parameters": {
+        "jsCode": "const p = $json.payload || {};\nreturn [{ json: { workflow: 'application_approved', tenant_id: p.tenant_id || null, application_id: p.application_id || null, scholarship_id: p.scholarship_id || null, scholarship_title: p.scholarship_title || '', student_email: p.student_email || '', changed_by: p.by || '', changed_at: p.changed_at || '', correlation_id: p.correlation_id || '' } }];"
+      },
+      "id": "6",
+      "name": "Handle Approved",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1230, 160]
+    },
+    {
+      "parameters": {
+        "jsCode": "const p = $json.payload || {};\nreturn [{ json: { workflow: 'application_rejected', tenant_id: p.tenant_id || null, application_id: p.application_id || null, scholarship_id: p.scholarship_id || null, scholarship_title: p.scholarship_title || '', student_email: p.student_email || '', reason: p.reason || '', changed_by: p.by || '', changed_at: p.changed_at || '', correlation_id: p.correlation_id || '' } }];"
+      },
+      "id": "7",
+      "name": "Handle Rejected",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1230, 260]
+    },
+    {
+      "parameters": {
+        "jsCode": "const p = $json.payload || {};\nreturn [{ json: { workflow: 'application_rejected_blacklist', tenant_id: p.tenant_id || null, application_id: p.application_id || null, scholarship_id: p.scholarship_id || null, scholarship_title: p.scholarship_title || '', student_id: p.student_id || null, student_email: p.student_email || '', reason: p.reason || '', rejected_at: p.rejected_at || '', correlation_id: p.correlation_id || '' } }];"
+      },
+      "id": "8",
+      "name": "Handle Blacklist Reject",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1230, 360]
+    },
+    {
+      "parameters": {
+        "jsCode": "const p = $json.payload || {};\nreturn [{ json: { workflow: 'unhandled_event', event: p.event || 'unknown', correlation_id: p.correlation_id || '', tenant_id: p.tenant_id || null, application_id: p.application_id || null, payload: p } }];"
+      },
+      "id": "9",
+      "name": "Handle Fallback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1230, 460]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"ok\": true,\n  \"received\": true,\n  \"event\": $json.workflow || $json.event || 'unknown',\n  \"correlation_id\": $json.correlation_id || ''\n}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "10",
+      "name": "Respond 202",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1490, 260]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"ok\": false,\n  \"error\": \"signature_or_payload_validation_failed\",\n  \"message\": $json.error || 'invalid request'\n}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "11",
+      "name": "Respond 401",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [980, 430]
+    }
+  ],
+  "connections": {
+    "TKIF Webhook": {
+      "main": [[{ "node": "Verify TKIF Signature", "type": "main", "index": 0 }]]
+    },
+    "Verify TKIF Signature": {
+      "main": [[{ "node": "Verified?", "type": "main", "index": 0 }]]
+    },
+    "Verified?": {
+      "main": [
+        [{ "node": "Route By Event", "type": "main", "index": 0 }],
+        [{ "node": "Respond 401", "type": "main", "index": 0 }]
+      ]
+    },
+    "Route By Event": {
+      "main": [
+        [{ "node": "Handle Submitted", "type": "main", "index": 0 }],
+        [{ "node": "Handle Approved", "type": "main", "index": 0 }],
+        [{ "node": "Handle Rejected", "type": "main", "index": 0 }],
+        [{ "node": "Handle Blacklist Reject", "type": "main", "index": 0 }],
+        [{ "node": "Handle Fallback", "type": "main", "index": 0 }]
+      ]
+    },
+    "Handle Submitted": {
+      "main": [[{ "node": "Respond 202", "type": "main", "index": 0 }]]
+    },
+    "Handle Approved": {
+      "main": [[{ "node": "Respond 202", "type": "main", "index": 0 }]]
+    },
+    "Handle Rejected": {
+      "main": [[{ "node": "Respond 202", "type": "main", "index": 0 }]]
+    },
+    "Handle Blacklist Reject": {
+      "main": [[{ "node": "Respond 202", "type": "main", "index": 0 }]]
+    },
+    "Handle Fallback": {
+      "main": [[{ "node": "Respond 202", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "versionId": "1",
+  "active": false,
+  "tags": []
+}

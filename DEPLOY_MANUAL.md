@@ -60,6 +60,14 @@
    - `0 3 * * * /usr/local/bin/php /home/USER/public_html/scripts/cleanup_maintenance.php --apply >/dev/null 2>&1`
 3. Add periodic health check cron (every 5 minutes):
    - `*/5 * * * * /usr/local/bin/php /home/USER/public_html/scripts/ops_health_check.php >/dev/null 2>&1`
+4. Add security retention cleanup cron (daily):
+    - Ensure `.env` includes:
+       - `SECURITY_RETENTION_ENABLED=true`
+       - `SECURITY_RETENTION_WORKER_TOKEN=<strong-random-token>`
+    - Cron command:
+       - `0 2 * * * /usr/bin/curl -sS -X POST "https://your-domain/?page=security_retention_run" -H "X-Worker-Token: YOUR_RETENTION_TOKEN" -d "token=YOUR_RETENTION_TOKEN" >/dev/null 2>&1`
+    - Optional helper script usage:
+       - `SECURITY_RETENTION_URL="https://your-domain/?page=security_retention_run" SECURITY_RETENTION_TOKEN="YOUR_RETENTION_TOKEN" bash /home/USER/public_html/scripts/security_retention_cron.sh >/dev/null 2>&1`
 4. Use Dashboard -> Admin Support Tools for:
    - resend verification
    - unlock user

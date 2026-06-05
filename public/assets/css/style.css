@@ -122,15 +122,52 @@ input, textarea, select {
 
 .field-row {
   display: grid;
-  grid-template-columns: 1.2fr 1.2fr 0.9fr auto auto;
+  grid-template-columns: repeat(4, minmax(160px, 1fr));
   gap: 8px;
-  align-items: center;
+  align-items: start;
   margin-bottom: 8px;
+  padding: 10px;
+  border: 1px solid #e4ecf3;
+  border-radius: 8px;
+  background: #fbfdff;
+}
+
+.field-row textarea {
+  min-height: 76px;
 }
 
 .field-row label {
   margin: 0;
   font-weight: 500;
+}
+
+.step-nav {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.step-indicator {
+  font-size: 13px;
+  color: #456;
+  margin-right: 6px;
+}
+
+.form-node {
+  padding: 10px;
+  border: 1px dashed #c8d6e5;
+  border-radius: 8px;
+  background: #f9fcff;
+}
+
+.form-node h4 {
+  margin: 0 0 6px;
+}
+
+.form-node p {
+  margin: 0;
+  color: #425466;
 }
 
 @media (max-width: 768px) {

@@ -11,14 +11,18 @@ CREATE TABLE IF NOT EXISTS tenants (
 
 CREATE TABLE IF NOT EXISTS users (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  register_id BIGINT UNSIGNED NULL,
   tenant_id BIGINT UNSIGNED NOT NULL,
   full_name VARCHAR(150) NOT NULL,
   email VARCHAR(190) NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
   role ENUM('student','admin','manager','it') NOT NULL,
+  blacklist TINYINT(1) NOT NULL DEFAULT 0,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
   email_verified_at DATETIME NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_users_tenant_blacklist (tenant_id, blacklist),
+  UNIQUE KEY uq_users_register_id (register_id),
   UNIQUE KEY uq_users_email_global (email),
   UNIQUE KEY uq_tenant_email (tenant_id, email),
   CONSTRAINT fk_users_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id)
@@ -167,6 +171,28 @@ CREATE TABLE IF NOT EXISTS rate_limit_events (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_rate_limit_action_client_time (action_key, client_key, created_at),
   INDEX idx_rate_limit_created_at (created_at)
+);
+
+CREATE TABLE IF NOT EXISTS login_attempts (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  email_normalized VARCHAR(190) NOT NULL,
+  ip_address VARCHAR(45) NOT NULL,
+  success TINYINT(1) NOT NULL DEFAULT 0,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_login_attempts_email_time (email_normalized, created_at),
+  INDEX idx_login_attempts_ip_time (ip_address, created_at)
+);
+
+CREATE TABLE IF NOT EXISTS password_resets (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  token_hash CHAR(64) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  consumed_at DATETIME NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_password_resets_token (token_hash),
+  INDEX idx_password_resets_user_expires (user_id, expires_at),
+  CONSTRAINT fk_password_resets_user FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
 CREATE TABLE IF NOT EXISTS phone_country_codes (

@@ -74,6 +74,11 @@ return [
         'internal_secret' => env('INTERNAL_NOTIFICATION_SECRET', ''),
         'hmac_tolerance_seconds' => (int)env('INTERNAL_NOTIFICATION_HMAC_TOLERANCE_SECONDS', '300'),
         'worker_token' => env('INTERNAL_NOTIFICATION_WORKER_TOKEN', ''),
+        'outbound_enabled' => env('OUTBOUND_PUSH_ENABLED', 'false') === 'true',
+        'outbound_endpoint' => env('OUTBOUND_PUSH_ENDPOINT', ''),
+        'outbound_secret' => env('OUTBOUND_PUSH_SECRET', ''),
+        'outbound_timeout_seconds' => (int)env('OUTBOUND_PUSH_TIMEOUT_SECONDS', '15'),
+        'outbound_route' => env('OUTBOUND_PUSH_ROUTE', 'n8n_global'),
     ],
     'registration' => [
         'enabled' => env('REGISTRATION_ENABLED', 'true') === 'true',
@@ -114,7 +119,40 @@ return [
                 'max' => (int)env('RATE_LIMIT_OTP_VERIFY_MAX', '10'),
                 'window_seconds' => (int)env('RATE_LIMIT_OTP_VERIFY_WINDOW_SECONDS', '300'),
             ],
+            'reset_request' => [
+                'max' => (int)env('RATE_LIMIT_RESET_REQUEST_MAX', '5'),
+                'window_seconds' => (int)env('RATE_LIMIT_RESET_REQUEST_WINDOW_SECONDS', '900'),
+            ],
+            'reset_submit' => [
+                'max' => (int)env('RATE_LIMIT_RESET_SUBMIT_MAX', '10'),
+                'window_seconds' => (int)env('RATE_LIMIT_RESET_SUBMIT_WINDOW_SECONDS', '900'),
+            ],
         ],
+        'login_lockout' => [
+            'enabled' => env('LOGIN_LOCKOUT_ENABLED', 'true') === 'true',
+            'failure_threshold' => (int)env('LOGIN_LOCKOUT_FAILURE_THRESHOLD', '8'),
+            'window_seconds' => (int)env('LOGIN_LOCKOUT_WINDOW_SECONDS', '900'),
+        ],
+        'login_attempts' => [
+            'ip_hash_pepper' => env('LOGIN_ATTEMPTS_IP_HASH_PEPPER', ''),
+        ],
+        'retention' => [
+            'enabled' => env('SECURITY_RETENTION_ENABLED', 'true') === 'true',
+            'login_attempts_days' => (int)env('SECURITY_RETENTION_LOGIN_ATTEMPTS_DAYS', '30'),
+            'password_resets_days' => (int)env('SECURITY_RETENTION_PASSWORD_RESETS_DAYS', '30'),
+            'worker_token' => env('SECURITY_RETENTION_WORKER_TOKEN', ''),
+        ],
+    ],
+    'captcha' => [
+        'enabled' => env('CAPTCHA_ENABLED', 'false') === 'true',
+        'provider' => env('CAPTCHA_PROVIDER', 'turnstile'),
+        'site_key' => env('CAPTCHA_SITE_KEY', ''),
+        'secret_key' => env('CAPTCHA_SECRET_KEY', ''),
+        'verify_url' => env('CAPTCHA_VERIFY_URL', ''),
+    ],
+    'password_reset' => [
+        'enabled' => env('PASSWORD_RESET_ENABLED', 'true') === 'true',
+        'ttl_minutes' => (int)env('PASSWORD_RESET_TTL_MINUTES', '30'),
     ],
     'smtp' => [
         'enabled' => env('SMTP_ENABLED', 'false') === 'true',

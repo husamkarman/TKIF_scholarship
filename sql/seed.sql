@@ -8,6 +8,8 @@ INSERT INTO users (tenant_id, full_name, email, password_hash, role) VALUES
 (1, 'Manager Demo', 'manager@tkif.local', '$2y$12$.ppKye16LWJ8B4We9HfmSu3Q4ET52kBasp09Msa0KTfHYnTg37djG', 'manager'),
 (1, 'IT Demo', 'it@tkif.local', '$2y$12$.ppKye16LWJ8B4We9HfmSu3Q4ET52kBasp09Msa0KTfHYnTg37djG', 'it');
 
+UPDATE users SET register_id = id WHERE register_id IS NULL;
+
 INSERT INTO phone_country_codes (iso2, country_name, dial_code, min_length, max_length, regex_pattern, is_default, is_active, sort_order) VALUES
 ('TR', 'Turkey', '+90', 10, 10, '/^[0-9]{10}$/', 1, 1, 1),
 ('AE', 'United Arab Emirates', '+971', 9, 9, '/^[0-9]{9}$/', 0, 1, 2),

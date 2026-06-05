@@ -1,0 +1,173 @@
+{
+  "name": "TKIF Outbound Actions Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "tkif-outbound-actions",
+        "responseMode": "responseNode"
+      },
+      "id": "1",
+      "name": "Actions Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 300],
+      "webhookId": "tkif-outbound-actions"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = (typeof $json.body === 'string') ? JSON.parse($json.body || '{}') : ($json.body || {});\nconst workflow = body.workflow || body.event || 'unknown';\nreturn [{ json: { workflow, payload: body, received_at: new Date().toISOString() } }];"
+      },
+      "id": "2",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "propertyName": "workflow",
+        "rules": {
+          "values": [
+            { "operation": "equal", "value": "application_submitted" },
+            { "operation": "equal", "value": "application_approved" },
+            { "operation": "equal", "value": "application_rejected" },
+            { "operation": "equal", "value": "application_rejected_blacklist" }
+          ]
+        },
+        "options": {
+          "fallbackOutput": 5
+        }
+      },
+      "id": "3",
+      "name": "Route Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const p = $json.payload || {};\nconst msg = `NEW SUBMISSION | tenant=${p.tenant_id || ''} app=${p.application_id || ''} scholarship=${p.scholarship_title || ''} student=${p.student_email || ''}`;\nreturn [{ json: { action: 'submitted_alert', message: msg, payload: p } }];"
+      },
+      "id": "4",
+      "name": "Build Submitted Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [980, 90]
+    },
+    {
+      "parameters": {
+        "jsCode": "const p = $json.payload || {};\nconst msg = `APPROVED | tenant=${p.tenant_id || ''} app=${p.application_id || ''} student=${p.student_email || ''}`;\nreturn [{ json: { action: 'approved_alert', message: msg, payload: p } }];"
+      },
+      "id": "5",
+      "name": "Build Approved Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [980, 210]
+    },
+    {
+      "parameters": {
+        "jsCode": "const p = $json.payload || {};\nconst msg = `REJECTED | tenant=${p.tenant_id || ''} app=${p.application_id || ''} student=${p.student_email || ''} reason=${p.reason || ''}`;\nreturn [{ json: { action: 'rejected_alert', message: msg, payload: p } }];"
+      },
+      "id": "6",
+      "name": "Build Rejected Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [980, 330]
+    },
+    {
+      "parameters": {
+        "jsCode": "const p = $json.payload || {};\nconst msg = `BLACKLIST AUTO-REJECT | tenant=${p.tenant_id || ''} app=${p.application_id || ''} student=${p.student_email || ''} reason=${p.reason || ''}`;\nreturn [{ json: { action: 'blacklist_alert', message: msg, payload: p } }];"
+      },
+      "id": "7",
+      "name": "Build Blacklist Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [980, 450]
+    },
+    {
+      "parameters": {
+        "jsCode": "const p = $json.payload || {};\nreturn [{ json: { action: 'fallback', message: `UNHANDLED EVENT ${p.workflow || p.event || 'unknown'}`, payload: p } }];"
+      },
+      "id": "8",
+      "name": "Build Fallback Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [980, 570]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.TKIF_SLACK_WEBHOOK_URL || ''}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": $json.message\n}",
+        "options": {
+          "ignoreHttpStatusErrors": true,
+          "timeout": 10000
+        }
+      },
+      "id": "9",
+      "name": "Optional Slack Notify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1250, 330]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"ok\": true,\n  \"processed\": true,\n  \"action\": $json.action || 'none'\n}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "10",
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1500, 330]
+    }
+  ],
+  "connections": {
+    "Actions Webhook": {
+      "main": [[{ "node": "Normalize Input", "type": "main", "index": 0 }]]
+    },
+    "Normalize Input": {
+      "main": [[{ "node": "Route Action", "type": "main", "index": 0 }]]
+    },
+    "Route Action": {
+      "main": [
+        [{ "node": "Build Submitted Alert", "type": "main", "index": 0 }],
+        [{ "node": "Build Approved Alert", "type": "main", "index": 0 }],
+        [{ "node": "Build Rejected Alert", "type": "main", "index": 0 }],
+        [{ "node": "Build Blacklist Alert", "type": "main", "index": 0 }],
+        [{ "node": "Build Fallback Alert", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Submitted Alert": {
+      "main": [[{ "node": "Optional Slack Notify", "type": "main", "index": 0 }]]
+    },
+    "Build Approved Alert": {
+      "main": [[{ "node": "Optional Slack Notify", "type": "main", "index": 0 }]]
+    },
+    "Build Rejected Alert": {
+      "main": [[{ "node": "Optional Slack Notify", "type": "main", "index": 0 }]]
+    },
+    "Build Blacklist Alert": {
+      "main": [[{ "node": "Optional Slack Notify", "type": "main", "index": 0 }]]
+    },
+    "Build Fallback Alert": {
+      "main": [[{ "node": "Optional Slack Notify", "type": "main", "index": 0 }]]
+    },
+    "Optional Slack Notify": {
+      "main": [[{ "node": "Respond 200", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "versionId": "1",
+  "active": false,
+  "tags": []
+}

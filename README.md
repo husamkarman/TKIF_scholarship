@@ -86,6 +86,10 @@ Registration can require email verification using either a code or a magic link.
    - `RATE_LIMIT_VERIFY_RESEND_MAX`, `RATE_LIMIT_VERIFY_RESEND_WINDOW_SECONDS`
    - `RATE_LIMIT_OTP_REQUEST_MAX`, `RATE_LIMIT_OTP_REQUEST_WINDOW_SECONDS`
    - `RATE_LIMIT_OTP_VERIFY_MAX`, `RATE_LIMIT_OTP_VERIFY_WINDOW_SECONDS`
+   - `SECURITY_RETENTION_ENABLED`
+   - `SECURITY_RETENTION_LOGIN_ATTEMPTS_DAYS`
+   - `SECURITY_RETENTION_PASSWORD_RESETS_DAYS`
+   - `SECURITY_RETENTION_WORKER_TOKEN`
 3. Apply migration:
    - `mysql -u root -p < sql/migrations/20260604_add_rate_limit_events.sql`
 4. Cleanup automation:
@@ -93,6 +97,12 @@ Registration can require email verification using either a code or a magic link.
    - Apply cleanup: `php scripts/cleanup_maintenance.php --apply`
 5. Health check:
    - `php scripts/ops_health_check.php`
+6. Retention cleanup worker endpoint:
+   - `curl -sS -X POST "http://localhost:8080/?page=security_retention_run" -H "X-Worker-Token: <token>" -d "token=<token>"`
+   - cPanel cron example (daily):
+     - `0 2 * * * /usr/bin/curl -sS -X POST "https://your-domain/?page=security_retention_run" -H "X-Worker-Token: <token>" -d "token=<token>" >/dev/null 2>&1`
+   - optional helper script:
+     - `SECURITY_RETENTION_URL="https://your-domain/?page=security_retention_run" SECURITY_RETENTION_TOKEN="<token>" bash scripts/security_retention_cron.sh`
 6. Admin/IT support tools in dashboard:
    - View verification attempts
    - Resend verification
