@@ -640,6 +640,11 @@
 
       <div class="card" style="margin-bottom: 14px;">
         <h3>Tenant User Management</h3>
+        <div class="grid" style="margin-bottom: 12px;">
+          <div class="card"><strong><?= (int)($adminRoleCounts['manager_count'] ?? 0) ?></strong><br><span class="muted">Managers</span></div>
+          <div class="card"><strong><?= (int)($adminRoleCounts['student_count'] ?? 0) ?></strong><br><span class="muted">Students</span></div>
+          <div class="card"><strong><?= count($adminUsers) ?></strong><br><span class="muted">Rows Shown</span></div>
+        </div>
         <?php if ($adminUsers === []): ?>
           <p>No manageable users found in this tenant.</p>
         <?php else: ?>
