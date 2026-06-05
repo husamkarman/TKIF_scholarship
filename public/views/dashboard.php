@@ -248,7 +248,7 @@
                 <td><?= h((string)$applicationRow['scholarship_title']) ?></td>
                 <td><span class="badge"><?= h((string)$applicationRow['status']) ?></span></td>
                 <td><?= h((string)$applicationRow['created_at']) ?></td>
-                <td><a class="btn" href="<?= h(app_route('profile_export') . '?user_id=' . (int)$applicationRow['student_id']) ?>">CSV</a></td>
+                <td><a class="btn" href="<?= h(app_route('profile_export') . '&user_id=' . (int)$applicationRow['student_id']) ?>">CSV</a></td>
               </tr>
             <?php endforeach; ?>
             </tbody>
@@ -966,6 +966,109 @@
     <?php endif; ?>
 
     <?php if ($isAdmin): ?>
+      <?php
+        $adminRoleCountStmt = $pdo->prepare(
+          'SELECT
+             SUM(CASE WHEN role = "admin" THEN 1 ELSE 0 END) AS admin_count,
+             SUM(CASE WHEN role = "manager" THEN 1 ELSE 0 END) AS manager_count,
+             SUM(CASE WHEN role = "student" THEN 1 ELSE 0 END) AS student_count,
+             SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active_count,
+             SUM(CASE WHEN is_active = 0 THEN 1 ELSE 0 END) AS inactive_count,
+             SUM(CASE WHEN email_verified_at IS NOT NULL THEN 1 ELSE 0 END) AS verified_count,
+             SUM(CASE WHEN email_verified_at IS NULL THEN 1 ELSE 0 END) AS unverified_count,
+             COUNT(*) AS total_count
+           FROM users
+           WHERE tenant_id = ?'
+        );
+        $adminRoleCountStmt->execute([(int)$user['tenant_id']]);
+        $adminRoleCounts = $adminRoleCountStmt->fetch() ?: [];
+
+        $adminBlacklistedCount = 0;
+        if ($usersBlacklistReady) {
+          $adminBlacklistCountStmt = $pdo->prepare('SELECT COUNT(*) FROM users WHERE tenant_id = ? AND blacklist = 1');
+          $adminBlacklistCountStmt->execute([(int)$user['tenant_id']]);
+          $adminBlacklistedCount = (int)$adminBlacklistCountStmt->fetchColumn();
+        }
+
+        $adminUsersSql = $usersBlacklistReady
+          ? 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, blacklist, email_verified_at, created_at FROM users WHERE tenant_id = ? ORDER BY id DESC LIMIT 300'
+          : 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users WHERE tenant_id = ? ORDER BY id DESC LIMIT 300';
+        $adminUsersStmt = $pdo->prepare($adminUsersSql);
+        $adminUsersStmt->execute([(int)$user['tenant_id']]);
+        $adminUsers = array_values(array_filter($adminUsersStmt->fetchAll(), static function (array $row) use ($user): bool {
+          return can_access_profile_target($user, $row);
+        }));
+
+        $adminAssignableRoles = assignable_roles_for_actor($user);
+      ?>
+      <div class="card" style="margin-bottom: 14px;">
+        <h3>Admin Operations Center</h3>
+        <p>Tenant-scoped control panel for user access, verification state, and profile actions.</p>
+        <div class="grid">
+          <div class="card"><strong><?= (int)($adminRoleCounts['total_count'] ?? 0) ?></strong><br><span class="muted">Tenant Users</span></div>
+          <div class="card"><strong><?= (int)($adminRoleCounts['admin_count'] ?? 0) ?></strong><br><span class="muted">Admin Users</span></div>
+          <div class="card"><strong><?= (int)($adminRoleCounts['manager_count'] ?? 0) ?></strong><br><span class="muted">Management Users</span></div>
+          <div class="card"><strong><?= (int)($adminRoleCounts['student_count'] ?? 0) ?></strong><br><span class="muted">Student Users</span></div>
+          <div class="card"><strong><?= (int)($adminRoleCounts['active_count'] ?? 0) ?></strong><br><span class="muted">Active Accounts</span></div>
+          <div class="card"><strong><?= (int)($adminRoleCounts['inactive_count'] ?? 0) ?></strong><br><span class="muted">Disabled Accounts</span></div>
+          <div class="card"><strong><?= (int)($adminRoleCounts['verified_count'] ?? 0) ?></strong><br><span class="muted">Email Verified</span></div>
+          <div class="card"><strong><?= (int)($adminRoleCounts['unverified_count'] ?? 0) ?></strong><br><span class="muted">Email Unverified</span></div>
+          <div class="card"><strong><?= (int)$adminBlacklistedCount ?></strong><br><span class="muted">Blacklisted Users</span></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom: 14px;">
+        <h3>Tenant User Management</h3>
+        <?php if ($adminUsers === []): ?>
+          <p>No manageable users found in this tenant.</p>
+        <?php else: ?>
+          <table class="table">
+            <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Email Verify</th><th>Role</th><th>Status</th><th>Blacklist</th><th>User Update</th><th>Profile</th></tr></thead>
+            <tbody>
+            <?php foreach ($adminUsers as $adminUser): ?>
+              <?php
+                $adminUserId = (int)($adminUser['id'] ?? 0);
+                $adminRole = (string)($adminUser['role'] ?? 'student');
+                $adminActive = (int)($adminUser['is_active'] ?? 1) === 1;
+                $adminFlag = (int)($adminUser['blacklist'] ?? 0) === 1;
+                $adminEmailVerified = trim((string)($adminUser['email_verified_at'] ?? '')) !== '';
+              ?>
+              <tr>
+                <td><?= (int)($adminUser['register_id'] ?? $adminUserId) ?></td>
+                <td><a href="<?= h(app_route('profile') . '&user_id=' . $adminUserId) ?>"><?= h((string)($adminUser['full_name'] ?? '')) ?></a></td>
+                <td><?= h((string)($adminUser['email'] ?? '')) ?></td>
+                <td><?= $adminEmailVerified ? 'verified' : 'unverified' ?></td>
+                <td><?= h($adminRole) ?></td>
+                <td><?= $adminActive ? 'active' : 'disabled' ?></td>
+                <td><?= $usersBlacklistReady ? ($adminFlag ? 'blacklist (1)' : 'whitelist (0)') : 'n/a' ?></td>
+                <td>
+                  <form method="post" action="<?= h(app_route('user_role_status_update')) ?>">
+                    <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+                    <input type="hidden" name="user_id" value="<?= $adminUserId ?>">
+                    <select name="role" required>
+                      <?php foreach ($adminAssignableRoles as $assignRole): ?>
+                        <option value="<?= h($assignRole) ?>" <?= $adminRole === $assignRole ? 'selected' : '' ?>><?= h($assignRole) ?></option>
+                      <?php endforeach; ?>
+                    </select>
+                    <select name="is_active" required>
+                      <option value="1" <?= $adminActive ? 'selected' : '' ?>>active</option>
+                      <option value="0" <?= !$adminActive ? 'selected' : '' ?>>disabled</option>
+                    </select>
+                    <select name="email_verification_status" required>
+                      <option value="verified" <?= $adminEmailVerified ? 'selected' : '' ?>>verified</option>
+                      <option value="unverified" <?= !$adminEmailVerified ? 'selected' : '' ?>>unverified</option>
+                    </select>
+                    <button class="btn" type="submit">Update</button>
+                  </form>
+                </td>
+                <td><a class="btn" href="<?= h(app_route('profile') . '&user_id=' . $adminUserId) ?>">Open Profile</a></td>
+              </tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+        <?php endif; ?>
+      </div>
+
       <div class="card" style="margin-bottom:14px;">
         <h3>Dashboard Automation Deploy Events</h3>
         <p>Signed n8n deployment actions (check/apply/rollback/register) are listed here.</p>
@@ -1034,7 +1137,7 @@
             <td><span class="badge"><?= h($a['status']) ?></span></td>
             <td><?= h($a['created_at']) ?></td>
             <?php if (can_view_profiles($user)): ?>
-              <td><a class="btn" href="<?= h(app_route('profile_export') . '?user_id=' . (int)($a['student_id'] ?? 0)) ?>">CSV</a></td>
+              <td><a class="btn" href="<?= h(app_route('profile_export') . '&user_id=' . (int)($a['student_id'] ?? 0)) ?>">CSV</a></td>
             <?php endif; ?>
             <?php if (in_array($user['role'], ['admin', 'manager'], true)): ?>
               <td>

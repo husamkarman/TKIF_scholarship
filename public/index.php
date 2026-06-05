@@ -4955,6 +4955,16 @@ if ($page === 'user_role_status_update' && $_SERVER['REQUEST_METHOD'] === 'POST'
         ? 'Target user was not found.'
         : 'Target user was not found in your tenant.';
     } else {
+      if (!can_access_profile_target($actor, $targetUser)) {
+        http_response_code(403);
+        exit('Forbidden');
+      }
+
+      $assignableRoles = assignable_roles_for_actor($actor);
+      if (!in_array($targetRole, $assignableRoles, true)) {
+        $error = 'You are not allowed to assign this target role.';
+        $page = 'dashboard';
+      } else {
       if ((string)$actor['role'] === 'it') {
         $updateStmt = $pdo->prepare('UPDATE users SET role = ?, is_active = ? WHERE id = ?');
         $updateStmt->execute([$targetRole, $targetActive, $targetUserId]);
@@ -5000,6 +5010,7 @@ if ($page === 'user_role_status_update' && $_SERVER['REQUEST_METHOD'] === 'POST'
         ? $targetEmailVerificationStatus
         : (trim((string)($targetUser['email_verified_at'] ?? '')) !== '' ? 'verified' : 'unverified');
       $message = 'User updated: role=' . $targetRole . ', status=' . ($targetActive === 1 ? 'active' : 'disabled') . ', email=' . $emailStatusForMessage . '.';
+      }
     }
 
     $page = 'dashboard';
@@ -5037,6 +5048,11 @@ if ($page === 'admin_user_support' && $_SERVER['REQUEST_METHOD'] === 'POST' && $
         : 'Target user not found in your tenant.';
       $page = 'dashboard';
     } else {
+      if (!can_access_profile_target($actor, $targetUser)) {
+        http_response_code(403);
+        exit('Forbidden');
+      }
+
       if ($action === 'unlock_user') {
         $unlockStmt = $pdo->prepare('UPDATE users SET is_active = 1 WHERE id = ?');
         $unlockStmt->execute([(int)$targetUser['id']]);
