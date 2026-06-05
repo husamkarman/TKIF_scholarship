@@ -339,11 +339,43 @@ Step 12 status behavior:
 - Success returns `approved_step12`.
 - Schedule/snapshot/handoff failure returns `needs_changes`.
 
+## Step 13: Steady-State Operations + Drift Watch
+
+Import `dashboard-automation-step13.json` for the thirteenth-stage automation path.
+
+What Step 13 adds:
+- Registers steady-state operations metadata (health checks + drift watch schedule).
+- Adds a strict pre-operations snapshot commit/push checkpoint.
+- Adds operations approval gate for long-running maintenance handoff.
+
+Execution path in Step 13:
+- All Step 12 checks and gates
+- Steady-state ops payload builder
+- Steady-state registration hook call
+- Pre-operations snapshot commit/push checkpoint
+- Operations approval gate
+
+Step 13 approval gates:
+- Pre-apply gate suffix: `dashboard-step13-approval`
+- Deployment gate suffix: `dashboard-step13-deploy-approval`
+- Post-release gate suffix: `dashboard-step13-monitor-approval`
+- Final hardening gate suffix: `dashboard-step13-hardening-approval`
+- Runbook handoff gate suffix: `dashboard-step13-handoff-approval`
+- Operations gate suffix: `dashboard-step13-ops-approval`
+
+Step 13 status behavior:
+- Success returns `approved_step13`.
+- Registration/snapshot/approval failure returns `needs_changes`.
+
+Operational output:
+- Captures health check set: `php_lint_changed_files`, `dashboard_role_smoke`, `notification_inbox_recent`.
+- Registers next drift check timestamp for operational follow-up.
+
 Webhook endpoint expected by PHP app:
 - POST `/webhook/scholarship-submit`
 
 ## Current Status
-- Dashboard automation Step 12 is implemented in `dashboard-automation-step12.json`.
+- Dashboard automation Step 13 is implemented in `dashboard-automation-step13.json`.
 - Submission event workflow remains implemented in `scholarship-submit.json`.
 
 ## Implemented Branches
