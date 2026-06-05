@@ -459,6 +459,13 @@
         <div class="card" style="margin-bottom: 14px;">
           <h3>All Users Operations</h3>
           <p>One table for role, status, blacklist, and support actions across all tenants.</p>
+          <div class="grid" style="margin-bottom: 12px;">
+            <div class="card"><strong><?= (int)($roleCounts['it_count'] ?? 0) ?></strong><br><span class="muted">IT</span></div>
+            <div class="card"><strong><?= (int)($roleCounts['admin_count'] ?? 0) ?></strong><br><span class="muted">Admin</span></div>
+            <div class="card"><strong><?= (int)($roleCounts['manager_count'] ?? 0) ?></strong><br><span class="muted">Managers</span></div>
+            <div class="card"><strong><?= (int)($roleCounts['student_count'] ?? 0) ?></strong><br><span class="muted">Students</span></div>
+            <div class="card"><strong><?= count($itUsers) ?></strong><br><span class="muted">Rows Shown</span></div>
+          </div>
           <?php if ($itUsers === []): ?>
             <p>No users found in this tenant.</p>
           <?php else: ?>
@@ -590,10 +597,14 @@
         $adminUsersStmt = $pdo->prepare($adminUsersSql);
         $adminUsersStmt->execute();
         $adminUsers = $adminUsersStmt->fetchAll();
+        $adminVisibleAdminCount = 0;
         $adminVisibleManagerCount = 0;
         $adminVisibleStudentCount = 0;
         foreach ($adminUsers as $adminUserRow) {
           $adminUserRole = (string)($adminUserRow['role'] ?? '');
+          if ($adminUserRole === 'admin') {
+            $adminVisibleAdminCount++;
+          }
           if ($adminUserRole === 'manager') {
             $adminVisibleManagerCount++;
           } elseif ($adminUserRole === 'student') {
@@ -651,6 +662,7 @@
       <div class="card" style="margin-bottom: 14px;">
         <h3>Tenant User Management</h3>
         <div class="grid" style="margin-bottom: 12px;">
+          <div class="card"><strong><?= (int)($adminVisibleAdminCount ?? 0) ?></strong><br><span class="muted">Admins</span></div>
           <div class="card"><strong><?= (int)($adminVisibleManagerCount ?? 0) ?></strong><br><span class="muted">Managers</span></div>
           <div class="card"><strong><?= (int)($adminVisibleStudentCount ?? 0) ?></strong><br><span class="muted">Students</span></div>
           <div class="card"><strong><?= count($adminUsers) ?></strong><br><span class="muted">Rows Shown</span></div>
@@ -1292,10 +1304,14 @@
         $adminUsersStmt = $pdo->prepare($adminUsersSql);
         $adminUsersStmt->execute();
         $adminUsers = $adminUsersStmt->fetchAll();
+        $adminVisibleAdminCount = 0;
         $adminVisibleManagerCount = 0;
         $adminVisibleStudentCount = 0;
         foreach ($adminUsers as $adminUserRow) {
           $adminUserRole = (string)($adminUserRow['role'] ?? '');
+          if ($adminUserRole === 'admin') {
+            $adminVisibleAdminCount++;
+          }
           if ($adminUserRole === 'manager') {
             $adminVisibleManagerCount++;
           } elseif ($adminUserRole === 'student') {
