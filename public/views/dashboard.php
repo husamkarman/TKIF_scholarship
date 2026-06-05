@@ -5,6 +5,22 @@
   <?php
     $applicationPhoneCountries = phone_country_codes_ready($pdo) ? phone_country_code_rows($pdo, true) : [];
     $usersBlacklistReady = users_blacklist_column_ready($pdo);
+    $adminUserRoleFilter = strtolower(trim((string)($_GET['admin_user_role'] ?? 'all')));
+    if (!in_array($adminUserRoleFilter, ['all', 'admin', 'manager', 'student'], true)) {
+      $adminUserRoleFilter = 'all';
+    }
+    $adminUserStatusFilter = strtolower(trim((string)($_GET['admin_user_status'] ?? 'all')));
+    if (!in_array($adminUserStatusFilter, ['all', 'active', 'disabled'], true)) {
+      $adminUserStatusFilter = 'all';
+    }
+    $itUserRoleFilter = strtolower(trim((string)($_GET['it_user_role'] ?? 'all')));
+    if (!in_array($itUserRoleFilter, ['all', 'it', 'admin', 'manager', 'student'], true)) {
+      $itUserRoleFilter = 'all';
+    }
+    $itUserStatusFilter = strtolower(trim((string)($_GET['it_user_status'] ?? 'all')));
+    if (!in_array($itUserStatusFilter, ['all', 'active', 'disabled'], true)) {
+      $itUserStatusFilter = 'all';
+    }
   ?>
   <?php if ($user['role'] === 'student'): ?>
     <?php
@@ -371,11 +387,38 @@
           $healthStatus = ($queueFailedCount === 0 && $deliveryFailedCount === 0) ? 'Healthy' : 'Needs Attention';
 
           $itUsersSql = $usersBlacklistReady
-            ? 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, blacklist, email_verified_at, created_at FROM users ORDER BY id DESC LIMIT 500'
-            : 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users ORDER BY id DESC LIMIT 500';
+            ? 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, blacklist, email_verified_at, created_at FROM users'
+            : 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users';
+          $itUsersParams = [];
+          if ($itUserRoleFilter !== 'all') {
+            $itUsersSql .= ' WHERE role = ?';
+            $itUsersParams[] = $itUserRoleFilter;
+          }
+          if ($itUserStatusFilter === 'active') {
+            $itUsersSql .= strpos($itUsersSql, ' WHERE ') === false ? ' WHERE is_active = 1' : ' AND is_active = 1';
+          } elseif ($itUserStatusFilter === 'disabled') {
+            $itUsersSql .= strpos($itUsersSql, ' WHERE ') === false ? ' WHERE is_active = 0' : ' AND is_active = 0';
+          }
+          $itUsersSql .= ' ORDER BY id DESC LIMIT 500';
           $itUsersStmt = $pdo->prepare($itUsersSql);
-          $itUsersStmt->execute();
+          $itUsersStmt->execute($itUsersParams);
           $itUsers = $itUsersStmt->fetchAll();
+          $itVisibleItCount = 0;
+          $itVisibleAdminCount = 0;
+          $itVisibleManagerCount = 0;
+          $itVisibleStudentCount = 0;
+          foreach ($itUsers as $itVisibleUser) {
+            $itVisibleRole = (string)($itVisibleUser['role'] ?? '');
+            if ($itVisibleRole === 'it') {
+              $itVisibleItCount++;
+            } elseif ($itVisibleRole === 'admin') {
+              $itVisibleAdminCount++;
+            } elseif ($itVisibleRole === 'manager') {
+              $itVisibleManagerCount++;
+            } elseif ($itVisibleRole === 'student') {
+              $itVisibleStudentCount++;
+            }
+          }
 
           $itScholarshipKpiSql = 'SELECT
                SUM(CASE WHEN status = "published" THEN 1 ELSE 0 END) AS published_count,
@@ -459,15 +502,42 @@
         <div class="card" style="margin-bottom: 14px;">
           <h3>All Users Operations</h3>
           <p>One table for role, status, blacklist, and support actions across all tenants.</p>
+          <form method="get" action="<?= h(app_route('dashboard')) ?>" style="display:flex; gap:8px; flex-wrap:wrap; align-items:end; margin-bottom: 12px;">
+            <input type="hidden" name="page" value="dashboard">
+            <input type="hidden" name="blacklist_tab" value="<?= h($blacklistActiveTab) ?>">
+            <input type="hidden" name="blacklist_search_type" value="<?= h($blacklistSearchType) ?>">
+            <input type="hidden" name="blacklist_search_term" value="<?= h($blacklistSearchTerm) ?>">
+            <div>
+              <label>Role</label>
+              <select name="it_user_role">
+                <option value="all" <?= $itUserRoleFilter === 'all' ? 'selected' : '' ?>>all</option>
+                <option value="it" <?= $itUserRoleFilter === 'it' ? 'selected' : '' ?>>it</option>
+                <option value="admin" <?= $itUserRoleFilter === 'admin' ? 'selected' : '' ?>>admin</option>
+                <option value="manager" <?= $itUserRoleFilter === 'manager' ? 'selected' : '' ?>>manager</option>
+                <option value="student" <?= $itUserRoleFilter === 'student' ? 'selected' : '' ?>>student</option>
+              </select>
+            </div>
+            <div>
+              <label>Status</label>
+              <select name="it_user_status">
+                <option value="all" <?= $itUserStatusFilter === 'all' ? 'selected' : '' ?>>all</option>
+                <option value="active" <?= $itUserStatusFilter === 'active' ? 'selected' : '' ?>>active</option>
+                <option value="disabled" <?= $itUserStatusFilter === 'disabled' ? 'selected' : '' ?>>disabled</option>
+              </select>
+            </div>
+            <div>
+              <button class="btn" type="submit">Filter</button>
+            </div>
+          </form>
           <div class="grid" style="margin-bottom: 12px;">
-            <div class="card"><strong><?= (int)($roleCounts['it_count'] ?? 0) ?></strong><br><span class="muted">IT</span></div>
-            <div class="card"><strong><?= (int)($roleCounts['admin_count'] ?? 0) ?></strong><br><span class="muted">Admin</span></div>
-            <div class="card"><strong><?= (int)($roleCounts['manager_count'] ?? 0) ?></strong><br><span class="muted">Managers</span></div>
-            <div class="card"><strong><?= (int)($roleCounts['student_count'] ?? 0) ?></strong><br><span class="muted">Students</span></div>
+            <div class="card"><strong><?= (int)$itVisibleItCount ?></strong><br><span class="muted">IT</span></div>
+            <div class="card"><strong><?= (int)$itVisibleAdminCount ?></strong><br><span class="muted">Admin</span></div>
+            <div class="card"><strong><?= (int)$itVisibleManagerCount ?></strong><br><span class="muted">Managers</span></div>
+            <div class="card"><strong><?= (int)$itVisibleStudentCount ?></strong><br><span class="muted">Students</span></div>
             <div class="card"><strong><?= count($itUsers) ?></strong><br><span class="muted">Rows Shown</span></div>
           </div>
           <?php if ($itUsers === []): ?>
-            <p>No users found in this tenant.</p>
+            <p>No users found for current filter.</p>
           <?php else: ?>
             <table class="table">
               <thead><tr><th>ID</th><th>Tenant</th><th>Name</th><th>Email</th><th>Email Verify</th><th>Role</th><th>Status</th><th>Blacklist</th><th>User Update</th><th>Profile</th><th>Blacklist Toggle</th><th>Support Action</th></tr></thead>
@@ -592,10 +662,21 @@
         }
 
         $adminUsersSql = $usersBlacklistReady
-          ? 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, blacklist, email_verified_at, created_at FROM users WHERE role != "it" ORDER BY id DESC LIMIT 500'
-          : 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users WHERE role != "it" ORDER BY id DESC LIMIT 500';
+          ? 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, blacklist, email_verified_at, created_at FROM users WHERE role != "it"'
+          : 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users WHERE role != "it"';
+        $adminUsersParams = [];
+        if ($adminUserRoleFilter !== 'all') {
+          $adminUsersSql .= ' AND role = ?';
+          $adminUsersParams[] = $adminUserRoleFilter;
+        }
+        if ($adminUserStatusFilter === 'active') {
+          $adminUsersSql .= ' AND is_active = 1';
+        } elseif ($adminUserStatusFilter === 'disabled') {
+          $adminUsersSql .= ' AND is_active = 0';
+        }
+        $adminUsersSql .= ' ORDER BY id DESC LIMIT 500';
         $adminUsersStmt = $pdo->prepare($adminUsersSql);
-        $adminUsersStmt->execute();
+        $adminUsersStmt->execute($adminUsersParams);
         $adminUsers = $adminUsersStmt->fetchAll();
         $adminVisibleAdminCount = 0;
         $adminVisibleManagerCount = 0;
@@ -661,6 +742,32 @@
 
       <div class="card" style="margin-bottom: 14px;">
         <h3>Tenant User Management</h3>
+        <form method="get" action="<?= h(app_route('dashboard')) ?>" style="display:flex; gap:8px; flex-wrap:wrap; align-items:end; margin-bottom: 12px;">
+          <input type="hidden" name="page" value="dashboard">
+          <input type="hidden" name="blacklist_tab" value="<?= h($blacklistActiveTab) ?>">
+          <input type="hidden" name="blacklist_search_type" value="<?= h($blacklistSearchType) ?>">
+          <input type="hidden" name="blacklist_search_term" value="<?= h($blacklistSearchTerm) ?>">
+          <div>
+            <label>Role</label>
+            <select name="admin_user_role">
+              <option value="all" <?= $adminUserRoleFilter === 'all' ? 'selected' : '' ?>>all</option>
+              <option value="admin" <?= $adminUserRoleFilter === 'admin' ? 'selected' : '' ?>>admin</option>
+              <option value="manager" <?= $adminUserRoleFilter === 'manager' ? 'selected' : '' ?>>manager</option>
+              <option value="student" <?= $adminUserRoleFilter === 'student' ? 'selected' : '' ?>>student</option>
+            </select>
+          </div>
+          <div>
+            <label>Status</label>
+            <select name="admin_user_status">
+              <option value="all" <?= $adminUserStatusFilter === 'all' ? 'selected' : '' ?>>all</option>
+              <option value="active" <?= $adminUserStatusFilter === 'active' ? 'selected' : '' ?>>active</option>
+              <option value="disabled" <?= $adminUserStatusFilter === 'disabled' ? 'selected' : '' ?>>disabled</option>
+            </select>
+          </div>
+          <div>
+            <button class="btn" type="submit">Filter</button>
+          </div>
+        </form>
         <div class="grid" style="margin-bottom: 12px;">
           <div class="card"><strong><?= (int)($adminVisibleAdminCount ?? 0) ?></strong><br><span class="muted">Admins</span></div>
           <div class="card"><strong><?= (int)($adminVisibleManagerCount ?? 0) ?></strong><br><span class="muted">Managers</span></div>
