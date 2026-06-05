@@ -104,11 +104,21 @@ $loadTemplateButtonLabel = 'Load Template';
       <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
       <input type="hidden" name="action" value="load_form">
       <label>Form</label>
-      <select name="load_form_id">
+      <select name="load_form_id" id="fb_load_form_select">
         <option value="0">Create new form</option>
         <?php foreach ($scholarships as $sch): ?>
           <?php $sid = (int)($sch['id'] ?? 0); ?>
-          <option value="<?= $sid ?>" <?= $selectedScholarshipId === $sid ? 'selected' : '' ?>>
+          <?php
+            $rowThemeJson = '{}';
+            if (isset($sch['theme_json'])) {
+              $rowTheme = normalize_form_theme(json_decode((string)$sch['theme_json'], true));
+              $encodedTheme = json_encode($rowTheme, JSON_UNESCAPED_UNICODE);
+              if (is_string($encodedTheme) && trim($encodedTheme) !== '') {
+                $rowThemeJson = $encodedTheme;
+              }
+            }
+          ?>
+          <option value="<?= $sid ?>" data-theme-json='<?= h($rowThemeJson) ?>' <?= $selectedScholarshipId === $sid ? 'selected' : '' ?>>
             #<?= $sid ?> - <?= h((string)($sch['title'] ?? 'Untitled')) ?> (<?= h((string)($sch['status'] ?? 'draft')) ?>)
           </option>
         <?php endforeach; ?>
@@ -164,6 +174,20 @@ $loadTemplateButtonLabel = 'Load Template';
     <p style="color:#555; margin-top:6px;">Status is controlled by action: Save Draft or Publish.</p>
 
     <h4>Theme</h4>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:end; margin-bottom:10px;">
+      <div style="min-width:220px; flex:1 1 220px;">
+        <label>Preset</label>
+        <select id="fb_theme_preset">
+          <option value="">Choose preset...</option>
+          <option value="corporate_blue">Corporate Blue</option>
+          <option value="campus_green">Campus Green</option>
+          <option value="minimal_mono">Minimal Mono</option>
+        </select>
+      </div>
+      <button class="btn" type="button" id="fb_apply_theme_preset">Apply Preset</button>
+      <button class="btn" type="button" id="fb_theme_copy_loaded">Copy From Loaded Form</button>
+      <button class="btn" type="button" id="fb_theme_reset">Reset Theme</button>
+    </div>
     <div class="grid" style="margin-bottom: 12px;">
       <div>
         <label>Primary Color</label>
@@ -247,6 +271,38 @@ $loadTemplateButtonLabel = 'Load Template';
   const themeSurface = document.getElementById('fb_theme_surface');
   const themeText = document.getElementById('fb_theme_text');
   const themeFont = document.getElementById('fb_theme_font');
+  const themePresetSelect = document.getElementById('fb_theme_preset');
+  const applyThemePresetBtn = document.getElementById('fb_apply_theme_preset');
+  const copyLoadedThemeBtn = document.getElementById('fb_theme_copy_loaded');
+  const resetThemeBtn = document.getElementById('fb_theme_reset');
+  const loadFormSelect = document.getElementById('fb_load_form_select');
+
+  const themePresets = {
+    corporate_blue: {
+      primary_color: '#0B4F8A',
+      accent_color: '#1482CC',
+      background_color: '#EFF5FB',
+      surface_color: '#FFFFFF',
+      text_color: '#102A43',
+      font_family: 'Verdana',
+    },
+    campus_green: {
+      primary_color: '#1F7A4C',
+      accent_color: '#2DA44E',
+      background_color: '#F2FAF5',
+      surface_color: '#FFFFFF',
+      text_color: '#123524',
+      font_family: 'Trebuchet MS',
+    },
+    minimal_mono: {
+      primary_color: '#2F3A4A',
+      accent_color: '#5C6570',
+      background_color: '#F5F6F7',
+      surface_color: '#FFFFFF',
+      text_color: '#1F2328',
+      font_family: 'Tahoma',
+    },
+  };
 
   if (!fieldsContainer || !schemaTextarea || !addBtn || !saveForm) {
     return;
@@ -311,6 +367,13 @@ $loadTemplateButtonLabel = 'Load Template';
     if (themeSurface) themeSurface.value = theme.surface_color;
     if (themeText) themeText.value = theme.text_color;
     if (themeFont) themeFont.value = theme.font_family;
+  }
+
+  function setTheme(theme) {
+    const normalized = normalizeTheme(theme);
+    applyThemeToInputs(normalized);
+    syncThemeJson();
+    renderPreview(getVisualSchema());
   }
 
   function syncThemeJson() {
@@ -673,6 +736,42 @@ $loadTemplateButtonLabel = 'Load Template';
       renderPreview(getVisualSchema());
     });
   });
+
+  if (applyThemePresetBtn) {
+    applyThemePresetBtn.addEventListener('click', function () {
+      const key = themePresetSelect ? String(themePresetSelect.value || '').trim() : '';
+      if (!key || !Object.prototype.hasOwnProperty.call(themePresets, key)) {
+        window.alert('Choose a preset first.');
+        return;
+      }
+      setTheme(themePresets[key]);
+    });
+  }
+
+  if (copyLoadedThemeBtn) {
+    copyLoadedThemeBtn.addEventListener('click', function () {
+      if (!loadFormSelect) {
+        return;
+      }
+      const selectedOption = loadFormSelect.options[loadFormSelect.selectedIndex];
+      if (!selectedOption || String(selectedOption.value || '0') === '0') {
+        window.alert('Select an existing form first in "Load Existing Form".');
+        return;
+      }
+      const rawTheme = String(selectedOption.getAttribute('data-theme-json') || '{}');
+      try {
+        setTheme(JSON.parse(rawTheme));
+      } catch (error) {
+        setTheme({});
+      }
+    });
+  }
+
+  if (resetThemeBtn) {
+    resetThemeBtn.addEventListener('click', function () {
+      setTheme({});
+    });
+  }
 
   try {
     const rawTheme = JSON.parse((themeInput && themeInput.value) ? themeInput.value : '{}');
