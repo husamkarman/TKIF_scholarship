@@ -275,6 +275,8 @@
                SUM(CASE WHEN role = "student" THEN 1 ELSE 0 END) AS student_count,
                SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active_count,
                SUM(CASE WHEN is_active = 0 THEN 1 ELSE 0 END) AS inactive_count,
+            SUM(CASE WHEN email_verified_at IS NOT NULL THEN 1 ELSE 0 END) AS verified_count,
+            SUM(CASE WHEN email_verified_at IS NULL THEN 1 ELSE 0 END) AS unverified_count,
                COUNT(*) AS total_count
              FROM users';
           if (!$itGlobalScope) {
@@ -334,6 +336,19 @@
           $itUsersStmt->execute();
           $itUsers = $itUsersStmt->fetchAll();
 
+          $itScholarshipKpiSql = 'SELECT
+               SUM(CASE WHEN status = "published" THEN 1 ELSE 0 END) AS published_count,
+               SUM(CASE WHEN status = "closed" THEN 1 ELSE 0 END) AS closed_count,
+               SUM(CASE WHEN status = "draft" THEN 1 ELSE 0 END) AS draft_count,
+               COUNT(*) AS total_count
+             FROM scholarships';
+          if (!$itGlobalScope) {
+            $itScholarshipKpiSql .= ' WHERE tenant_id = ?';
+          }
+          $itScholarshipKpiStmt = $pdo->prepare($itScholarshipKpiSql);
+          $itScholarshipKpiStmt->execute($itGlobalScope ? [] : [(int)$user['tenant_id']]);
+          $itScholarshipKpis = $itScholarshipKpiStmt->fetch() ?: [];
+
           $supportActionOptions = [
             'verification_attempts' => 'View Verification Attempts',
             'login_lockout_status' => 'View Login Lockout Status',
@@ -380,12 +395,19 @@
             <div class="card"><strong><?= (int)$queueFailedCount ?></strong><br><span class="muted">Queue Failed</span></div>
             <div class="card"><strong><?= (int)$deliveryFailedCount ?></strong><br><span class="muted">Delivery Failed</span></div>
             <div class="card"><strong><?= (int)$deployEventsCount ?></strong><br><span class="muted">Deploy Events</span></div>
+            <div class="card"><strong><?= (int)($roleCounts['total_count'] ?? 0) ?></strong><br><span class="muted">All Users</span></div>
             <div class="card"><strong><?= (int)($roleCounts['it_count'] ?? 0) ?></strong><br><span class="muted">IT Users</span></div>
             <div class="card"><strong><?= (int)($roleCounts['admin_count'] ?? 0) ?></strong><br><span class="muted">Admin Users</span></div>
             <div class="card"><strong><?= (int)($roleCounts['manager_count'] ?? 0) ?></strong><br><span class="muted">Management Users</span></div>
             <div class="card"><strong><?= (int)($roleCounts['student_count'] ?? 0) ?></strong><br><span class="muted">Student Users</span></div>
+            <div class="card"><strong><?= (int)($roleCounts['active_count'] ?? 0) ?></strong><br><span class="muted">Active Accounts</span></div>
             <div class="card"><strong><?= (int)$blacklistedCount ?></strong><br><span class="muted">Blacklisted Users</span></div>
             <div class="card"><strong><?= (int)($roleCounts['inactive_count'] ?? 0) ?></strong><br><span class="muted">Disabled Accounts</span></div>
+            <div class="card"><strong><?= (int)($roleCounts['verified_count'] ?? 0) ?></strong><br><span class="muted">Email Verified</span></div>
+            <div class="card"><strong><?= (int)($roleCounts['unverified_count'] ?? 0) ?></strong><br><span class="muted">Email Unverified</span></div>
+            <div class="card"><strong><?= (int)($itScholarshipKpis['published_count'] ?? 0) ?></strong><br><span class="muted">Active Scholarships</span></div>
+            <div class="card"><strong><?= (int)($itScholarshipKpis['closed_count'] ?? 0) ?></strong><br><span class="muted">Closed Scholarships</span></div>
+            <div class="card"><strong><?= (int)($itScholarshipKpis['draft_count'] ?? 0) ?></strong><br><span class="muted">Draft Scholarships</span></div>
           </div>
           <p style="margin-top:10px;">
             <a class="btn" href="<?= h(app_route('identity_diagnostics')) ?>">Identity Diagnostics</a>
