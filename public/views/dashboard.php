@@ -585,13 +585,11 @@
         }
 
         $adminUsersSql = $usersBlacklistReady
-          ? 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, blacklist, email_verified_at, created_at FROM users WHERE tenant_id = ? AND role != "it" ORDER BY id DESC LIMIT 300'
-          : 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users WHERE tenant_id = ? AND role != "it" ORDER BY id DESC LIMIT 300';
+          ? 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, blacklist, email_verified_at, created_at FROM users WHERE tenant_id = ? AND role IN ("manager", "student") ORDER BY id DESC LIMIT 500'
+          : 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users WHERE tenant_id = ? AND role IN ("manager", "student") ORDER BY id DESC LIMIT 500';
         $adminUsersStmt = $pdo->prepare($adminUsersSql);
         $adminUsersStmt->execute([(int)$user['tenant_id']]);
-        $adminUsers = array_values(array_filter($adminUsersStmt->fetchAll(), static function (array $row) use ($user): bool {
-          return can_access_profile_target($user, $row);
-        }));
+        $adminUsers = $adminUsersStmt->fetchAll();
         $adminAssignableRoles = assignable_roles_for_actor($user);
 
         $schKpiStmt = $pdo->prepare(
@@ -1274,13 +1272,11 @@
         }
 
         $adminUsersSql = $usersBlacklistReady
-          ? 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, blacklist, email_verified_at, created_at FROM users WHERE tenant_id = ? AND role != "it" ORDER BY id DESC LIMIT 300'
-          : 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users WHERE tenant_id = ? AND role != "it" ORDER BY id DESC LIMIT 300';
+          ? 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, blacklist, email_verified_at, created_at FROM users WHERE tenant_id = ? AND role IN ("manager", "student") ORDER BY id DESC LIMIT 500'
+          : 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users WHERE tenant_id = ? AND role IN ("manager", "student") ORDER BY id DESC LIMIT 500';
         $adminUsersStmt = $pdo->prepare($adminUsersSql);
         $adminUsersStmt->execute([(int)$user['tenant_id']]);
-        $adminUsers = array_values(array_filter($adminUsersStmt->fetchAll(), static function (array $row) use ($user): bool {
-          return can_access_profile_target($user, $row);
-        }));
+        $adminUsers = $adminUsersStmt->fetchAll();
 
         $adminAssignableRoles = assignable_roles_for_actor($user);
 
