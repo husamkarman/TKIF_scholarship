@@ -94,9 +94,9 @@ $loadTemplateButtonLabel = 'Load Template';
     <h3>Load Existing Form</h3>
     <form method="post" action="<?= h(app_route('form_builder') . '&builder_type=' . h($builderType)) ?>">
       <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
-      <input type="hidden" name="action" value="load_scholarship">
+      <input type="hidden" name="action" value="load_form">
       <label>Form</label>
-      <select name="load_scholarship_id">
+      <select name="load_form_id">
         <option value="0">Create new form</option>
         <?php foreach ($scholarships as $sch): ?>
           <?php $sid = (int)($sch['id'] ?? 0); ?>

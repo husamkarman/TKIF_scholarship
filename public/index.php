@@ -2760,6 +2760,10 @@ $formBuilderScholarshipTitle = '';
 $formBuilderScholarshipDescription = '';
 $formBuilderScholarshipStatus = 'draft';
 $formBuilderEntityType = 'scholarship';
+$formsLibraryRows = [];
+$formsLibrarySearch = '';
+$formsLibraryStatus = 'all';
+$formsLibraryUsingUnified = false;
 $phoneCodeRows = [];
 $phoneCodeEdit = null;
 $registerOld = [
@@ -4526,8 +4530,8 @@ if ($page === 'form_builder' && $pdo) {
       }
     } elseif ($action === 'load_template') {
       $selectedTemplate = trim((string)($_POST['template'] ?? ''));
-    } elseif ($action === 'load_scholarship') {
-      $selectedScholarshipId = (int)($_POST['load_scholarship_id'] ?? 0);
+    } elseif ($action === 'load_form' || $action === 'load_scholarship') {
+      $selectedScholarshipId = (int)($_POST['load_form_id'] ?? ($_POST['load_scholarship_id'] ?? 0));
     }
   }
 
@@ -4578,6 +4582,60 @@ if ($page === 'form_builder' && $pdo) {
   } else {
     $formBuilderScholarshipId = 0;
     $formBuilderScholarshipStatus = 'draft';
+  }
+}
+
+if ($page === 'forms_library' && $pdo) {
+  $actor = require_login();
+  if (!in_array((string)$actor['role'], ['admin', 'it'], true)) {
+    http_response_code(403);
+    exit('Forbidden');
+  }
+
+  $formsLibrarySearch = trim((string)($_GET['q'] ?? ''));
+  $formsLibraryStatus = strtolower(trim((string)($_GET['status'] ?? 'all')));
+  if (!in_array($formsLibraryStatus, ['all', 'draft', 'published', 'closed', 'archived'], true)) {
+    $formsLibraryStatus = 'all';
+  }
+
+  $formsLibraryUsingUnified = forms_tables_ready($pdo);
+  if ($formsLibraryUsingUnified) {
+    $sql = 'SELECT id, tenant_id, title, description, status, settings_json, created_at, updated_at FROM forms WHERE tenant_id = ?';
+    $params = [(int)$actor['tenant_id']];
+    if ($formsLibraryStatus !== 'all') {
+      $sql .= ' AND status = ?';
+      $params[] = $formsLibraryStatus;
+    }
+    if ($formsLibrarySearch !== '') {
+      $sql .= ' AND (LOWER(title) LIKE ? OR LOWER(COALESCE(description, "")) LIKE ?)';
+      $params[] = '%' . strtolower($formsLibrarySearch) . '%';
+      $params[] = '%' . strtolower($formsLibrarySearch) . '%';
+    }
+    $sql .= ' ORDER BY updated_at DESC, id DESC LIMIT 500';
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $formsLibraryRows = $stmt->fetchAll();
+  } else {
+    $sql = 'SELECT id, tenant_id, title, description, status, form_schema_json, created_at, created_at AS updated_at FROM scholarships WHERE tenant_id = ?';
+    $params = [(int)$actor['tenant_id']];
+    if ($formsLibraryStatus !== 'all') {
+      $legacyStatus = $formsLibraryStatus === 'archived' ? 'closed' : $formsLibraryStatus;
+      $sql .= ' AND status = ?';
+      $params[] = $legacyStatus;
+    }
+    if ($formsLibrarySearch !== '') {
+      $sql .= ' AND (LOWER(title) LIKE ? OR LOWER(COALESCE(description, "")) LIKE ?)';
+      $params[] = '%' . strtolower($formsLibrarySearch) . '%';
+      $params[] = '%' . strtolower($formsLibrarySearch) . '%';
+    }
+    $sql .= ' ORDER BY id DESC LIMIT 500';
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $formsLibraryRows = $stmt->fetchAll();
+    foreach ($formsLibraryRows as &$legacyFormRow) {
+      $legacyFormRow['settings_json'] = '{"builder_type":"scholarship"}';
+    }
+    unset($legacyFormRow);
   }
 }
 
@@ -5977,6 +6035,7 @@ $user = current_user();
           <a href="<?= h(app_route('dashboard')) ?>">Dashboard</a>
           <a href="<?= h(app_route('profile')) ?>">Profile</a>
           <?php if (in_array((string)$user['role'], ['admin', 'it'], true)): ?>
+            <a href="<?= h(app_route('forms_library')) ?>">Forms Library</a>
             <a href="<?= h(app_route('form_builder')) ?>">Form Builder</a>
             <a href="<?= h(app_route('identity_diagnostics')) ?>">Identity Diagnostics</a>
             <?php if ((string)$user['role'] === 'it'): ?>
@@ -6199,6 +6258,9 @@ $user = current_user();
 
     <?php elseif ($page === 'form_builder' && $user && $pdo): ?>
       <?php require __DIR__ . '/views/form_builder.php'; ?>
+
+    <?php elseif ($page === 'forms_library' && $user && $pdo): ?>
+      <?php require __DIR__ . '/views/forms_library.php'; ?>
 
     <?php elseif ($page === 'phone_codes' && $user && $pdo): ?>
       <?php require __DIR__ . '/views/phone_codes.php'; ?>
