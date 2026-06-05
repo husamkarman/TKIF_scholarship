@@ -266,8 +266,9 @@
 
       <?php if ($isIt): ?>
         <?php
-          $roleCountStmt = $pdo->prepare(
-            'SELECT
+          $itGlobalScope = true;
+
+          $roleCountSql = 'SELECT
                SUM(CASE WHEN role = "it" THEN 1 ELSE 0 END) AS it_count,
                SUM(CASE WHEN role = "admin" THEN 1 ELSE 0 END) AS admin_count,
                SUM(CASE WHEN role = "manager" THEN 1 ELSE 0 END) AS manager_count,
@@ -275,16 +276,21 @@
                SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active_count,
                SUM(CASE WHEN is_active = 0 THEN 1 ELSE 0 END) AS inactive_count,
                COUNT(*) AS total_count
-             FROM users
-             WHERE tenant_id = ?'
-          );
-          $roleCountStmt->execute([(int)$user['tenant_id']]);
+             FROM users';
+          if (!$itGlobalScope) {
+            $roleCountSql .= ' WHERE tenant_id = ?';
+          }
+          $roleCountStmt = $pdo->prepare($roleCountSql);
+          $roleCountStmt->execute($itGlobalScope ? [] : [(int)$user['tenant_id']]);
           $roleCounts = $roleCountStmt->fetch() ?: [];
 
           $blacklistedCount = 0;
           if ($usersBlacklistReady) {
-            $blacklistCountStmt = $pdo->prepare('SELECT COUNT(*) FROM users WHERE tenant_id = ? AND blacklist = 1');
-            $blacklistCountStmt->execute([(int)$user['tenant_id']]);
+            $blacklistCountSql = $itGlobalScope
+              ? 'SELECT COUNT(*) FROM users WHERE blacklist = 1'
+              : 'SELECT COUNT(*) FROM users WHERE tenant_id = ? AND blacklist = 1';
+            $blacklistCountStmt = $pdo->prepare($blacklistCountSql);
+            $blacklistCountStmt->execute($itGlobalScope ? [] : [(int)$user['tenant_id']]);
             $blacklistedCount = (int)$blacklistCountStmt->fetchColumn();
           }
 
@@ -322,10 +328,10 @@
           $healthStatus = ($queueFailedCount === 0 && $deliveryFailedCount === 0) ? 'Healthy' : 'Needs Attention';
 
           $itUsersSql = $usersBlacklistReady
-            ? 'SELECT id, register_id, full_name, email, role, is_active, blacklist, email_verified_at, created_at FROM users WHERE tenant_id = ? ORDER BY id DESC LIMIT 200'
-            : 'SELECT id, register_id, full_name, email, role, is_active, email_verified_at, created_at FROM users WHERE tenant_id = ? ORDER BY id DESC LIMIT 200';
+            ? 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, blacklist, email_verified_at, created_at FROM users ORDER BY id DESC LIMIT 500'
+            : 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users ORDER BY id DESC LIMIT 500';
           $itUsersStmt = $pdo->prepare($itUsersSql);
-          $itUsersStmt->execute([(int)$user['tenant_id']]);
+          $itUsersStmt->execute();
           $itUsers = $itUsersStmt->fetchAll();
 
           $supportActionOptions = [
@@ -388,13 +394,13 @@
         </div>
 
         <div class="card" style="margin-bottom: 14px;">
-          <h3>Tenant User Operations</h3>
-          <p>One table for role, status, blacklist, and support actions.</p>
+          <h3>All Users Operations</h3>
+          <p>One table for role, status, blacklist, and support actions across all tenants.</p>
           <?php if ($itUsers === []): ?>
             <p>No users found in this tenant.</p>
           <?php else: ?>
             <table class="table">
-              <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Email Verify</th><th>Role</th><th>Status</th><th>Blacklist</th><th>User Update</th><th>Profile</th><th>Blacklist Toggle</th><th>Support Action</th></tr></thead>
+              <thead><tr><th>ID</th><th>Tenant</th><th>Name</th><th>Email</th><th>Email Verify</th><th>Role</th><th>Status</th><th>Blacklist</th><th>User Update</th><th>Profile</th><th>Blacklist Toggle</th><th>Support Action</th></tr></thead>
               <tbody>
               <?php foreach ($itUsers as $itUser): ?>
                 <?php
@@ -406,7 +412,8 @@
                 ?>
                 <tr>
                   <td><?= (int)($itUser['register_id'] ?? $itUserId) ?></td>
-                  <td><a href="<?= h(app_route('profile') . '?user_id=' . $itUserId) ?>"><?= h((string)($itUser['full_name'] ?? '')) ?></a></td>
+                  <td><?= (int)($itUser['tenant_id'] ?? 0) ?></td>
+                  <td><a href="<?= h(app_route('profile') . '&user_id=' . $itUserId) ?>"><?= h((string)($itUser['full_name'] ?? '')) ?></a></td>
                   <td><?= h((string)($itUser['email'] ?? '')) ?></td>
                   <td><?= $itEmailVerified ? 'verified' : 'unverified' ?></td>
                   <td><?= h($itRole) ?></td>
@@ -433,7 +440,7 @@
                       <button class="btn" type="submit">Update</button>
                     </form>
                   </td>
-                  <td><a class="btn" href="<?= h(app_route('profile') . '?user_id=' . $itUserId) ?>">Open Profile</a></td>
+                  <td><a class="btn" href="<?= h(app_route('profile') . '&user_id=' . $itUserId) ?>">Open Profile</a></td>
                   <td>
                     <?php if ($usersBlacklistReady): ?>
                       <form method="post" action="<?= h(app_route('user_blacklist_toggle')) ?>">

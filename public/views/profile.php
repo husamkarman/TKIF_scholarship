@@ -6,8 +6,13 @@ if (!$canViewProfiles) {
   $targetUserId = (int)$user['id'];
 }
 
-$targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
-$targetStmt->execute([$targetUserId, $user['tenant_id']]);
+if ((string)$user['role'] === 'it') {
+  $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users WHERE id = ? LIMIT 1');
+  $targetStmt->execute([$targetUserId]);
+} else {
+  $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
+  $targetStmt->execute([$targetUserId, $user['tenant_id']]);
+}
 $targetUser = $targetStmt->fetch();
 
 if (!$targetUser):
@@ -35,8 +40,13 @@ else:
 
   <?php if ($canViewProfiles): ?>
     <?php
-      $usersStmt = $pdo->prepare('SELECT id, full_name, email, role, is_active FROM users WHERE tenant_id = ? ORDER BY id DESC LIMIT 100');
-      $usersStmt->execute([$user['tenant_id']]);
+      if ((string)$user['role'] === 'it') {
+        $usersStmt = $pdo->prepare('SELECT id, full_name, email, role, is_active FROM users ORDER BY id DESC LIMIT 300');
+        $usersStmt->execute();
+      } else {
+        $usersStmt = $pdo->prepare('SELECT id, full_name, email, role, is_active FROM users WHERE tenant_id = ? ORDER BY id DESC LIMIT 100');
+        $usersStmt->execute([$user['tenant_id']]);
+      }
       $manageUsers = array_values(array_filter($usersStmt->fetchAll(), static function (array $mu) use ($user): bool {
         return can_access_profile_target($user, $mu);
       }));
@@ -53,7 +63,7 @@ else:
             <td><?= h($mu['email']) ?></td>
             <td><?= h($mu['role']) ?></td>
             <td><?= $mu['is_active'] ? 'Active' : 'Inactive' ?></td>
-            <td><a class="btn" href="/?page=profile&user_id=<?= (int)$mu['id'] ?>">Open</a></td>
+            <td><a class="btn" href="<?= h(app_route('profile') . '&user_id=' . (int)$mu['id']) ?>">Open</a></td>
           </tr>
         <?php endforeach; ?>
         </tbody>
@@ -69,8 +79,8 @@ else:
       $appToFilter = (string)$appFilters['to'];
       $appScholarshipFilter = (int)$appFilters['scholarship_id'];
 
-      $scholarshipFilterOptions = fetch_tenant_scholarship_options($pdo, (int)$user['tenant_id']);
-      $studentApplications = fetch_profile_student_applications($pdo, (int)$user['tenant_id'], (int)$targetUser['id'], $appFilters);
+      $scholarshipFilterOptions = fetch_tenant_scholarship_options($pdo, (int)$targetUser['tenant_id']);
+      $studentApplications = fetch_profile_student_applications($pdo, (int)$targetUser['tenant_id'], (int)$targetUser['id'], $appFilters);
       $statusSummary = summarize_application_statuses($studentApplications);
 
       $exportParams = [

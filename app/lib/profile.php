@@ -124,7 +124,7 @@ function assignable_roles_for_actor(array $actor): array
 {
   $role = (string)($actor['role'] ?? '');
   if ($role === 'it') {
-    return ['admin', 'manager', 'student'];
+    return ['it', 'admin', 'manager', 'student'];
   }
   if ($role === 'admin') {
     return ['manager', 'student'];

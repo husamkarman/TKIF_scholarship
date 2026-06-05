@@ -25,8 +25,13 @@ function handle_profile_save_request(PDO $pdo, array $actor, array $post): array
     exit('Forbidden');
   }
 
-  $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, is_active, email_verified_at FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
-  $targetStmt->execute([$targetUserId, $actor['tenant_id']]);
+  if ((string)$actor['role'] === 'it') {
+    $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, is_active, email_verified_at FROM users WHERE id = ? LIMIT 1');
+    $targetStmt->execute([$targetUserId]);
+  } else {
+    $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, is_active, email_verified_at FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
+    $targetStmt->execute([$targetUserId, $actor['tenant_id']]);
+  }
   $targetUser = $targetStmt->fetch();
 
   if (!$targetUser) {

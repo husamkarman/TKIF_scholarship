@@ -3772,8 +3772,13 @@ if ($page === 'profile_export' && $pdo) {
     $targetUserId = (int)$actor['id'];
   }
 
-  $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, role FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
-  $targetStmt->execute([$targetUserId, (int)$actor['tenant_id']]);
+  if ((string)$actor['role'] === 'it') {
+    $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, role FROM users WHERE id = ? LIMIT 1');
+    $targetStmt->execute([$targetUserId]);
+  } else {
+    $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, role FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
+    $targetStmt->execute([$targetUserId, (int)$actor['tenant_id']]);
+  }
   $targetUser = $targetStmt->fetch();
   if (!$targetUser) {
     http_response_code(404);
@@ -3785,7 +3790,7 @@ if ($page === 'profile_export' && $pdo) {
   }
 
   $filters = normalize_profile_application_filters($_GET);
-  $applications = fetch_profile_student_applications($pdo, (int)$actor['tenant_id'], (int)$targetUserId, $filters);
+  $applications = fetch_profile_student_applications($pdo, (int)$targetUser['tenant_id'], (int)$targetUserId, $filters);
 
   $filename = 'student-applications-user-' . (string)(int)$targetUserId . '.csv';
   header('Content-Type: text/csv; charset=UTF-8');
@@ -4238,8 +4243,13 @@ if ($page === 'profile' && $pdo) {
   $actor = require_login();
   $targetUserId = (int)($_GET['user_id'] ?? $actor['id']);
   if ($targetUserId !== (int)$actor['id']) {
-    $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, is_active FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
-    $targetStmt->execute([$targetUserId, (int)$actor['tenant_id']]);
+    if ((string)$actor['role'] === 'it') {
+      $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, is_active FROM users WHERE id = ? LIMIT 1');
+      $targetStmt->execute([$targetUserId]);
+    } else {
+      $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, is_active FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
+      $targetStmt->execute([$targetUserId, (int)$actor['tenant_id']]);
+    }
     $targetUser = $targetStmt->fetch();
     if (!$targetUser) {
       http_response_code(404);
@@ -4931,22 +4941,44 @@ if ($page === 'user_role_status_update' && $_SERVER['REQUEST_METHOD'] === 'POST'
     $error = 'Invalid email verification status.';
     $page = 'dashboard';
   } else {
-    $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, is_active, email_verified_at FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
-    $targetStmt->execute([$targetUserId, (int)$actor['tenant_id']]);
+    if ((string)$actor['role'] === 'it') {
+      $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, is_active, email_verified_at FROM users WHERE id = ? LIMIT 1');
+      $targetStmt->execute([$targetUserId]);
+    } else {
+      $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, is_active, email_verified_at FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
+      $targetStmt->execute([$targetUserId, (int)$actor['tenant_id']]);
+    }
     $targetUser = $targetStmt->fetch();
 
     if (!$targetUser) {
-      $error = 'Target user was not found in your tenant.';
+      $error = (string)$actor['role'] === 'it'
+        ? 'Target user was not found.'
+        : 'Target user was not found in your tenant.';
     } else {
-      $updateStmt = $pdo->prepare('UPDATE users SET role = ?, is_active = ? WHERE id = ? AND tenant_id = ?');
-      $updateStmt->execute([$targetRole, $targetActive, $targetUserId, (int)$actor['tenant_id']]);
+      if ((string)$actor['role'] === 'it') {
+        $updateStmt = $pdo->prepare('UPDATE users SET role = ?, is_active = ? WHERE id = ?');
+        $updateStmt->execute([$targetRole, $targetActive, $targetUserId]);
+      } else {
+        $updateStmt = $pdo->prepare('UPDATE users SET role = ?, is_active = ? WHERE id = ? AND tenant_id = ?');
+        $updateStmt->execute([$targetRole, $targetActive, $targetUserId, (int)$actor['tenant_id']]);
+      }
 
       if ($targetEmailVerificationStatus === 'verified') {
-        $verificationStmt = $pdo->prepare('UPDATE users SET email_verified_at = COALESCE(email_verified_at, NOW()) WHERE id = ? AND tenant_id = ?');
-        $verificationStmt->execute([$targetUserId, (int)$actor['tenant_id']]);
+        if ((string)$actor['role'] === 'it') {
+          $verificationStmt = $pdo->prepare('UPDATE users SET email_verified_at = COALESCE(email_verified_at, NOW()) WHERE id = ?');
+          $verificationStmt->execute([$targetUserId]);
+        } else {
+          $verificationStmt = $pdo->prepare('UPDATE users SET email_verified_at = COALESCE(email_verified_at, NOW()) WHERE id = ? AND tenant_id = ?');
+          $verificationStmt->execute([$targetUserId, (int)$actor['tenant_id']]);
+        }
       } elseif ($targetEmailVerificationStatus === 'unverified') {
-        $verificationStmt = $pdo->prepare('UPDATE users SET email_verified_at = NULL WHERE id = ? AND tenant_id = ?');
-        $verificationStmt->execute([$targetUserId, (int)$actor['tenant_id']]);
+        if ((string)$actor['role'] === 'it') {
+          $verificationStmt = $pdo->prepare('UPDATE users SET email_verified_at = NULL WHERE id = ?');
+          $verificationStmt->execute([$targetUserId]);
+        } else {
+          $verificationStmt = $pdo->prepare('UPDATE users SET email_verified_at = NULL WHERE id = ? AND tenant_id = ?');
+          $verificationStmt->execute([$targetUserId, (int)$actor['tenant_id']]);
+        }
       }
 
       write_audit_log(
@@ -4990,12 +5022,19 @@ if ($page === 'admin_user_support' && $_SERVER['REQUEST_METHOD'] === 'POST' && $
     $error = 'Provide a valid target email.';
     $page = 'dashboard';
   } else {
-    $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, is_active, email_verified_at FROM users WHERE tenant_id = ? AND LOWER(TRIM(email)) = ? LIMIT 1');
-    $targetStmt->execute([(int)$actor['tenant_id'], $targetEmail]);
+    if ((string)$actor['role'] === 'it') {
+      $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, is_active, email_verified_at FROM users WHERE LOWER(TRIM(email)) = ? LIMIT 1');
+      $targetStmt->execute([$targetEmail]);
+    } else {
+      $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, is_active, email_verified_at FROM users WHERE tenant_id = ? AND LOWER(TRIM(email)) = ? LIMIT 1');
+      $targetStmt->execute([(int)$actor['tenant_id'], $targetEmail]);
+    }
     $targetUser = $targetStmt->fetch();
 
     if (!$targetUser) {
-      $error = 'Target user not found in your tenant.';
+      $error = (string)$actor['role'] === 'it'
+        ? 'Target user not found.'
+        : 'Target user not found in your tenant.';
       $page = 'dashboard';
     } else {
       if ($action === 'unlock_user') {
