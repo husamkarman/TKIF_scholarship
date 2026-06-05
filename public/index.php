@@ -4594,6 +4594,11 @@ if ($page === 'forms_library_archive_toggle' && $_SERVER['REQUEST_METHOD'] === '
   }
 
   $formId = (int)($_POST['form_id'] ?? 0);
+  $returnSearch = trim((string)($_POST['return_q'] ?? ''));
+  $returnStatus = strtolower(trim((string)($_POST['return_status'] ?? 'all')));
+  if (!in_array($returnStatus, ['all', 'draft', 'published', 'closed', 'archived'], true)) {
+    $returnStatus = 'all';
+  }
   $targetStatus = strtolower(trim((string)($_POST['target_status'] ?? 'archived')));
   if (!in_array($targetStatus, ['draft', 'archived'], true)) {
     $targetStatus = 'archived';
@@ -4623,6 +4628,8 @@ if ($page === 'forms_library_archive_toggle' && $_SERVER['REQUEST_METHOD'] === '
       }
     }
     $page = 'forms_library';
+    $_GET['q'] = $returnSearch;
+    $_GET['status'] = $returnStatus;
   }
 }
 
@@ -4635,6 +4642,11 @@ if ($page === 'forms_library_duplicate' && $_SERVER['REQUEST_METHOD'] === 'POST'
   }
 
   $formId = (int)($_POST['form_id'] ?? 0);
+  $returnSearch = trim((string)($_POST['return_q'] ?? ''));
+  $returnStatus = strtolower(trim((string)($_POST['return_status'] ?? 'all')));
+  if (!in_array($returnStatus, ['all', 'draft', 'published', 'closed', 'archived'], true)) {
+    $returnStatus = 'all';
+  }
   if ($formId <= 0) {
     $error = 'Invalid form selection.';
     $page = 'forms_library';
@@ -4705,6 +4717,8 @@ if ($page === 'forms_library_duplicate' && $_SERVER['REQUEST_METHOD'] === 'POST'
     }
 
     $page = 'forms_library';
+    $_GET['q'] = $returnSearch;
+    $_GET['status'] = $returnStatus;
   }
 }
 
@@ -4733,13 +4747,20 @@ if ($page === 'forms_library' && $pdo) {
               f.created_at,
               f.updated_at,
               COALESCE(fs.response_count, 0) AS response_count,
-              fs.last_response_at
+              fs.last_response_at,
+              COALESCE(fp.latest_published_version_no, 0) AS latest_published_version_no
             FROM forms f
             LEFT JOIN (
               SELECT form_id, COUNT(*) AS response_count, MAX(submitted_at) AS last_response_at
               FROM form_submissions
               GROUP BY form_id
             ) fs ON fs.form_id = f.id
+            LEFT JOIN (
+              SELECT form_id, MAX(version_no) AS latest_published_version_no
+              FROM form_versions
+              WHERE status = "published"
+              GROUP BY form_id
+            ) fp ON fp.form_id = f.id
             WHERE f.tenant_id = ?';
     $params = [(int)$actor['tenant_id']];
     if ($formsLibraryStatus !== 'all') {
@@ -4756,6 +4777,7 @@ if ($page === 'forms_library' && $pdo) {
     $stmt->execute($params);
     $formsLibraryRows = $stmt->fetchAll();
   } else {
+    $legacyVersioningReady = scholarship_form_versioning_ready($pdo);
     $sql = 'SELECT
               s.id,
               s.tenant_id,
@@ -4766,13 +4788,29 @@ if ($page === 'forms_library' && $pdo) {
               s.created_at,
               s.created_at AS updated_at,
               COALESCE(a.response_count, 0) AS response_count,
-              a.last_response_at
+              a.last_response_at';
+    if ($legacyVersioningReady) {
+      $sql .= ', COALESCE(sp.latest_published_version_no, 0) AS latest_published_version_no';
+    } else {
+      $sql .= ', 0 AS latest_published_version_no';
+    }
+    $sql .= '
             FROM scholarships s
             LEFT JOIN (
               SELECT scholarship_id, COUNT(*) AS response_count, MAX(created_at) AS last_response_at
               FROM applications
               GROUP BY scholarship_id
-            ) a ON a.scholarship_id = s.id
+            ) a ON a.scholarship_id = s.id';
+    if ($legacyVersioningReady) {
+      $sql .= '
+            LEFT JOIN (
+              SELECT scholarship_id, MAX(version_no) AS latest_published_version_no
+              FROM scholarship_form_versions
+              WHERE status = "published"
+              GROUP BY scholarship_id
+            ) sp ON sp.scholarship_id = s.id';
+    }
+    $sql .= '
             WHERE s.tenant_id = ?';
     $params = [(int)$actor['tenant_id']];
     if ($formsLibraryStatus !== 'all') {

@@ -43,13 +43,14 @@ $usingUnified = (bool)($formsLibraryUsingUnified ?? false);
     <p>No forms found for current filter.</p>
   <?php else: ?>
     <table class="table">
-      <thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Responses</th><th>Last Response</th><th>Updated</th><th>Actions</th></tr></thead>
+      <thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Published Ver</th><th>Responses</th><th>Last Response</th><th>Updated</th><th>Actions</th></tr></thead>
       <tbody>
       <?php foreach ($forms as $form): ?>
         <?php
           $formId = (int)($form['id'] ?? 0);
           $formTitle = (string)($form['title'] ?? 'Untitled Form');
           $formStatus = (string)($form['status'] ?? 'draft');
+          $latestPublishedVersionNo = (int)($form['latest_published_version_no'] ?? 0);
           $responseCount = (int)($form['response_count'] ?? 0);
           $lastResponseAt = (string)($form['last_response_at'] ?? '');
           $formUpdated = (string)($form['updated_at'] ?? $form['created_at'] ?? '');
@@ -65,6 +66,7 @@ $usingUnified = (bool)($formsLibraryUsingUnified ?? false);
           <td>#<?= $formId ?></td>
           <td><?= h($formTitle) ?></td>
           <td><?= h($formStatus) ?></td>
+          <td><?= $latestPublishedVersionNo > 0 ? ('v' . (string)$latestPublishedVersionNo) : '-' ?></td>
           <td><?= $responseCount ?></td>
           <td><?= h($lastResponseAt !== '' ? $lastResponseAt : '-') ?></td>
           <td><?= h($formUpdated) ?></td>
@@ -75,12 +77,16 @@ $usingUnified = (bool)($formsLibraryUsingUnified ?? false);
             <form method="post" action="<?= h(app_route('forms_library_duplicate')) ?>" style="display:inline;">
               <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
               <input type="hidden" name="form_id" value="<?= $formId ?>">
+              <input type="hidden" name="return_q" value="<?= h($formsSearch) ?>">
+              <input type="hidden" name="return_status" value="<?= h($formsStatus) ?>">
               <button class="btn" type="submit">Duplicate</button>
             </form>
-            <form method="post" action="<?= h(app_route('forms_library_archive_toggle')) ?>" style="display:inline;">
+            <form method="post" action="<?= h(app_route('forms_library_archive_toggle')) ?>" style="display:inline;" onsubmit="return confirm('Are you sure you want to <?= h(strtolower($archiveLabel)) ?> this form?');">
               <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
               <input type="hidden" name="form_id" value="<?= $formId ?>">
               <input type="hidden" name="target_status" value="<?= h($archiveTarget) ?>">
+              <input type="hidden" name="return_q" value="<?= h($formsSearch) ?>">
+              <input type="hidden" name="return_status" value="<?= h($formsStatus) ?>">
               <button class="btn" type="submit"><?= h($archiveLabel) ?></button>
             </form>
           </td>
