@@ -150,6 +150,8 @@
 
   <?php else: ?>
     <?php
+      $isAdmin = ((string)$user['role'] === 'admin');
+      $isIt = ((string)$user['role'] === 'it');
       $schStmt = $pdo->prepare('SELECT id, title, description, status, form_schema_json, created_at FROM scholarships WHERE tenant_id = ? ORDER BY id DESC LIMIT 50');
       $schStmt->execute([$user['tenant_id']]);
       $scholarshipsForAdmin = $schStmt->fetchAll();
@@ -261,6 +263,45 @@
         <p>Step 12 has started. Open the dedicated workspace to load starter templates and shape schema drafts.</p>
         <a class="btn" href="<?= h(app_route('form_builder')) ?>">Open Form Builder</a>
       </div>
+
+      <?php if ($isIt): ?>
+        <?php
+          $queuePendingCount = 0;
+          $queueFailedCount = 0;
+          foreach ($notificationJobs as $job) {
+            $jobStatus = (string)($job['status'] ?? '');
+            if (in_array($jobStatus, ['pending', 'retrying'], true)) {
+              $queuePendingCount++;
+            }
+            if ($jobStatus === 'failed') {
+              $queueFailedCount++;
+            }
+          }
+
+          $deliveryFailedCount = 0;
+          foreach ($notificationDeliveries as $delivery) {
+            if ((string)($delivery['status'] ?? '') === 'failed') {
+              $deliveryFailedCount++;
+            }
+          }
+        ?>
+        <div class="card" style="margin-bottom: 14px;">
+          <h3>IT Operations Center</h3>
+          <p>Platform operations visibility and incident-response shortcuts for IT.</p>
+          <div class="grid">
+            <div class="card"><strong><?= (int)$queuePendingCount ?></strong><br><span class="muted">Queue Pending/Retrying</span></div>
+            <div class="card"><strong><?= (int)$queueFailedCount ?></strong><br><span class="muted">Queue Failed</span></div>
+            <div class="card"><strong><?= (int)$deliveryFailedCount ?></strong><br><span class="muted">Delivery Failed</span></div>
+            <div class="card"><strong><?= count($dashboardAutomationRows ?? []) ?></strong><br><span class="muted">Deploy Events</span></div>
+          </div>
+          <p style="margin-top:10px;">
+            <a class="btn" href="<?= h(app_route('identity_diagnostics')) ?>">Identity Diagnostics</a>
+            <a class="btn" href="<?= h(app_route('phone_codes')) ?>">Phone Codes</a>
+          </p>
+        </div>
+      <?php endif; ?>
+
+      <?php if ($isAdmin): ?>
 
       <div class="card" style="margin-bottom: 14px;">
         <h3>Create Scholarship</h3>
@@ -378,6 +419,7 @@
           </table>
         <?php endif; ?>
       </div>
+      <?php endif; ?>
     <?php endif; ?>
     <?php if (in_array($user['role'], ['admin', 'it'], true)): ?>
       <div class="card" style="margin-bottom: 14px;">
