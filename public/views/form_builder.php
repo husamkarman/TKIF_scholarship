@@ -394,6 +394,7 @@ $loadTemplateButtonLabel = 'Load Template';
     previewPanel.style.padding = '10px';
     previewPanel.style.borderRadius = '8px';
     previewPanel.style.border = '1px solid ' + theme.primary_color;
+    previewPanel.style.boxShadow = 'inset 0 0 0 1px ' + theme.accent_color + '22';
   }
 
   function createFieldRow(field) {
@@ -664,13 +665,12 @@ $loadTemplateButtonLabel = 'Load Template';
     const html = [];
     const theme = getThemeFromInputs();
     applyThemeToPreview(theme);
-    html.push('<div class="card" style="margin-bottom:10px; border-color:' + escapeHtml(theme.primary_color) + ';"><strong>Preview Mode</strong><br><span class="muted">' + escapeHtml(builderType) + '</span></div>');
+    html.push('<div class="card" style="margin-bottom:10px; border-color:' + escapeHtml(theme.primary_color) + '; background:' + escapeHtml(theme.surface_color) + '; color:' + escapeHtml(theme.text_color) + ';"><strong>Preview Mode</strong><br><span class="muted">' + escapeHtml(builderType) + '</span></div>');
     schema.forEach(function (field) {
       const type = String(field.type || 'text');
       const label = String(field.label || 'Untitled');
       const help = String(field.help_text || '');
-      html.push('<div class="card" style="margin-bottom:8px;">');
-      html.push('<div style="display:flex; justify-content:space-between; gap:8px; align-items:center;"><strong>' + escapeHtml(label) + '</strong><span class="badge">' + escapeHtml(type) + '</span></div>');
+      html.push('<div class="card" style="margin-bottom:8px; background:' + escapeHtml(theme.surface_color) + '; border-color:' + escapeHtml(theme.accent_color) + '; color:' + escapeHtml(theme.text_color) + ';"><div style="display:flex; justify-content:space-between; gap:8px; align-items:center;"><strong style="color:' + escapeHtml(theme.primary_color) + ';">' + escapeHtml(label) + '</strong><span class="badge" style="background:' + escapeHtml(theme.background_color) + '; border:1px solid ' + escapeHtml(theme.accent_color) + '; color:' + escapeHtml(theme.text_color) + ';">' + escapeHtml(type) + '</span></div>');
       if (help) {
         html.push('<div style="margin-top:6px;">' + help + '</div>');
       }
@@ -684,7 +684,7 @@ $loadTemplateButtonLabel = 'Load Template';
         }
       }
       if (['text', 'textarea', 'number', 'email', 'date', 'phone', 'select', 'radio', 'checkbox'].includes(type)) {
-        html.push('<p class="muted">Interactive field preview</p>');
+        html.push('<p class="muted" style="color:' + escapeHtml(theme.text_color) + '; opacity:0.75;">Interactive field preview</p>');
       }
       html.push('</div>');
     });
