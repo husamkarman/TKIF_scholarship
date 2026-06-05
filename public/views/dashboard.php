@@ -991,8 +991,8 @@
         }
 
         $adminUsersSql = $usersBlacklistReady
-          ? 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, blacklist, email_verified_at, created_at FROM users WHERE tenant_id = ? ORDER BY id DESC LIMIT 300'
-          : 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users WHERE tenant_id = ? ORDER BY id DESC LIMIT 300';
+          ? 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, blacklist, email_verified_at, created_at FROM users WHERE tenant_id = ? AND role != "it" ORDER BY id DESC LIMIT 300'
+          : 'SELECT id, register_id, tenant_id, full_name, email, role, is_active, email_verified_at, created_at FROM users WHERE tenant_id = ? AND role != "it" ORDER BY id DESC LIMIT 300';
         $adminUsersStmt = $pdo->prepare($adminUsersSql);
         $adminUsersStmt->execute([(int)$user['tenant_id']]);
         $adminUsers = array_values(array_filter($adminUsersStmt->fetchAll(), static function (array $row) use ($user): bool {
@@ -1000,10 +1000,38 @@
         }));
 
         $adminAssignableRoles = assignable_roles_for_actor($user);
+
+        // Scholarship KPIs
+        $schKpiStmt = $pdo->prepare(
+          'SELECT
+             SUM(CASE WHEN status = "published" THEN 1 ELSE 0 END) AS published_count,
+             SUM(CASE WHEN status = "closed"    THEN 1 ELSE 0 END) AS closed_count,
+             SUM(CASE WHEN status = "draft"     THEN 1 ELSE 0 END) AS draft_count,
+             COUNT(*) AS total_count
+           FROM scholarships
+           WHERE tenant_id = ?'
+        );
+        $schKpiStmt->execute([(int)$user['tenant_id']]);
+        $schKpis = $schKpiStmt->fetch() ?: [];
+
+        // Full scholarship table for admin
+        $allScholarshipsStmt = $pdo->prepare(
+          'SELECT s.id, s.title, s.description, s.status, s.created_at,
+                  u.full_name AS created_by_name,
+                  COUNT(DISTINCT a.id) AS application_count
+           FROM scholarships s
+           LEFT JOIN users u ON u.id = s.created_by
+           LEFT JOIN applications a ON a.scholarship_id = s.id
+           WHERE s.tenant_id = ?
+           GROUP BY s.id
+           ORDER BY s.id DESC'
+        );
+        $allScholarshipsStmt->execute([(int)$user['tenant_id']]);
+        $allScholarships = $allScholarshipsStmt->fetchAll();
       ?>
       <div class="card" style="margin-bottom: 14px;">
         <h3>Admin Operations Center</h3>
-        <p>Tenant-scoped control panel for user access, verification state, and profile actions.</p>
+        <p>Tenant-scoped control panel for user access, scholarship status, and profile actions.</p>
         <div class="grid">
           <div class="card"><strong><?= (int)($adminRoleCounts['total_count'] ?? 0) ?></strong><br><span class="muted">Tenant Users</span></div>
           <div class="card"><strong><?= (int)($adminRoleCounts['admin_count'] ?? 0) ?></strong><br><span class="muted">Admin Users</span></div>
@@ -1014,6 +1042,9 @@
           <div class="card"><strong><?= (int)($adminRoleCounts['verified_count'] ?? 0) ?></strong><br><span class="muted">Email Verified</span></div>
           <div class="card"><strong><?= (int)($adminRoleCounts['unverified_count'] ?? 0) ?></strong><br><span class="muted">Email Unverified</span></div>
           <div class="card"><strong><?= (int)$adminBlacklistedCount ?></strong><br><span class="muted">Blacklisted Users</span></div>
+          <div class="card"><strong><?= (int)($schKpis['published_count'] ?? 0) ?></strong><br><span class="muted">Active Scholarships</span></div>
+          <div class="card"><strong><?= (int)($schKpis['closed_count'] ?? 0) ?></strong><br><span class="muted">Closed Scholarships</span></div>
+          <div class="card"><strong><?= (int)($schKpis['draft_count'] ?? 0) ?></strong><br><span class="muted">Draft Scholarships</span></div>
         </div>
       </div>
 
@@ -1062,6 +1093,72 @@
                   </form>
                 </td>
                 <td><a class="btn" href="<?= h(app_route('profile') . '&user_id=' . $adminUserId) ?>">Open Profile</a></td>
+              </tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+        <?php endif; ?>
+      </div>
+
+      <div class="card" style="margin-bottom: 14px;">
+        <h3>Scholarships</h3>
+        <p>All scholarships for this tenant. Use the Form Builder above to edit or create versions.</p>
+        <?php if ($allScholarships === []): ?>
+          <p>No scholarships found for this tenant.</p>
+        <?php else: ?>
+          <table class="table">
+            <thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Applications</th><th>Created By</th><th>Created</th><th>Actions</th></tr></thead>
+            <tbody>
+            <?php foreach ($allScholarships as $sch): ?>
+              <tr>
+                <td><?= (int)$sch['id'] ?></td>
+                <td><?= h((string)$sch['title']) ?></td>
+                <td>
+                  <?php
+                    $schStatusClass = match((string)$sch['status']) {
+                      'published' => 'color:#1a7f37',
+                      'closed'    => 'color:#cf222e',
+                      default     => 'color:#6e7781',
+                    };
+                  ?>
+                  <span class="badge" style="<?= $schStatusClass ?>"><?= h((string)$sch['status']) ?></span>
+                </td>
+                <td><?= (int)$sch['application_count'] ?></td>
+                <td><?= h((string)($sch['created_by_name'] ?? '')) ?></td>
+                <td><?= h((string)$sch['created_at']) ?></td>
+                <td>
+                  <button class="btn load-scholarship-btn" type="button"
+                    data-id="<?= (int)$sch['id'] ?>"
+                    data-title="<?= h((string)$sch['title']) ?>"
+                    data-description="<?= h((string)($sch['description'] ?? '')) ?>"
+                    data-status="<?= h((string)$sch['status']) ?>"
+                    data-schema="<?= h((string)($sch['form_schema_json'] ?? '[]')) ?>">
+                    Edit / New Version
+                  </button>
+                  <?php if ((string)$sch['status'] !== 'published'): ?>
+                  <form method="post" action="<?= h(app_route('create_scholarship')) ?>" style="display:inline">
+                    <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+                    <input type="hidden" name="scholarship_id" value="<?= (int)$sch['id'] ?>">
+                    <input type="hidden" name="title" value="<?= h((string)$sch['title']) ?>">
+                    <input type="hidden" name="description" value="<?= h((string)($sch['description'] ?? '')) ?>">
+                    <input type="hidden" name="status" value="published">
+                    <input type="hidden" name="form_schema_json" value="<?= h((string)($sch['form_schema_json'] ?? '[]')) ?>">
+                    <input type="hidden" name="form_settings_json" value="{}">
+                    <button class="btn" type="submit">Publish</button>
+                  </form>
+                  <?php elseif ((string)$sch['status'] === 'published'): ?>
+                  <form method="post" action="<?= h(app_route('create_scholarship')) ?>" style="display:inline">
+                    <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+                    <input type="hidden" name="scholarship_id" value="<?= (int)$sch['id'] ?>">
+                    <input type="hidden" name="title" value="<?= h((string)$sch['title']) ?>">
+                    <input type="hidden" name="description" value="<?= h((string)($sch['description'] ?? '')) ?>">
+                    <input type="hidden" name="status" value="closed">
+                    <input type="hidden" name="form_schema_json" value="<?= h((string)($sch['form_schema_json'] ?? '[]')) ?>">
+                    <input type="hidden" name="form_settings_json" value="{}">
+                    <button class="btn" type="submit">Close</button>
+                  </form>
+                  <?php endif; ?>
+                </td>
               </tr>
             <?php endforeach; ?>
             </tbody>
