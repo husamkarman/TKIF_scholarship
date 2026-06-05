@@ -4906,6 +4906,57 @@ if ($page === 'user_blacklist_toggle' && $_SERVER['REQUEST_METHOD'] === 'POST' &
   }
 }
 
+if ($page === 'user_role_status_update' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
+  require_csrf();
+  $actor = require_login();
+  if (!in_array((string)$actor['role'], ['admin', 'it'], true)) {
+    http_response_code(403);
+    exit('Forbidden');
+  }
+
+  $targetUserId = (int)($_POST['user_id'] ?? 0);
+  $targetRole = strtolower(trim((string)($_POST['role'] ?? '')));
+  $targetActive = (int)($_POST['is_active'] ?? 1) === 1 ? 1 : 0;
+  $allowedRoles = ['student', 'manager', 'admin', 'it'];
+
+  if ($targetUserId <= 0) {
+    $error = 'Invalid user for role/status update.';
+    $page = 'dashboard';
+  } elseif (!in_array($targetRole, $allowedRoles, true)) {
+    $error = 'Invalid target role.';
+    $page = 'dashboard';
+  } else {
+    $targetStmt = $pdo->prepare('SELECT id, tenant_id, full_name, email, role, is_active FROM users WHERE id = ? AND tenant_id = ? LIMIT 1');
+    $targetStmt->execute([$targetUserId, (int)$actor['tenant_id']]);
+    $targetUser = $targetStmt->fetch();
+
+    if (!$targetUser) {
+      $error = 'Target user was not found in your tenant.';
+    } else {
+      $updateStmt = $pdo->prepare('UPDATE users SET role = ?, is_active = ? WHERE id = ? AND tenant_id = ?');
+      $updateStmt->execute([$targetRole, $targetActive, $targetUserId, (int)$actor['tenant_id']]);
+
+      write_audit_log(
+        $pdo,
+        (int)$actor['tenant_id'],
+        (int)$actor['id'],
+        'admin_support_update_role_status',
+        'user',
+        $targetUserId,
+        [
+          'target_email' => (string)($targetUser['email'] ?? ''),
+          'new_role' => $targetRole,
+          'new_is_active' => $targetActive,
+        ]
+      );
+
+      $message = 'User updated: role=' . $targetRole . ', status=' . ($targetActive === 1 ? 'active' : 'disabled') . '.';
+    }
+
+    $page = 'dashboard';
+  }
+}
+
 if ($page === 'admin_user_support' && $_SERVER['REQUEST_METHOD'] === 'POST' && $pdo) {
   require_csrf();
   $actor = require_login();

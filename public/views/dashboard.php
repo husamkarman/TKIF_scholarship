@@ -266,6 +266,40 @@
 
       <?php if ($isIt): ?>
         <?php
+          $roleCountStmt = $pdo->prepare(
+            'SELECT
+               SUM(CASE WHEN role = "it" THEN 1 ELSE 0 END) AS it_count,
+               SUM(CASE WHEN role = "admin" THEN 1 ELSE 0 END) AS admin_count,
+               SUM(CASE WHEN role = "manager" THEN 1 ELSE 0 END) AS manager_count,
+               SUM(CASE WHEN role = "student" THEN 1 ELSE 0 END) AS student_count,
+               SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active_count,
+               SUM(CASE WHEN is_active = 0 THEN 1 ELSE 0 END) AS inactive_count,
+               COUNT(*) AS total_count
+             FROM users
+             WHERE tenant_id = ?'
+          );
+          $roleCountStmt->execute([(int)$user['tenant_id']]);
+          $roleCounts = $roleCountStmt->fetch() ?: [];
+
+          $blacklistedCount = 0;
+          if ($usersBlacklistReady) {
+            $blacklistCountStmt = $pdo->prepare('SELECT COUNT(*) FROM users WHERE tenant_id = ? AND blacklist = 1');
+            $blacklistCountStmt->execute([(int)$user['tenant_id']]);
+            $blacklistedCount = (int)$blacklistCountStmt->fetchColumn();
+          }
+
+          $deployEventsCount = 0;
+          if (function_exists('notification_inbox_ready') && notification_inbox_ready($pdo)) {
+            $deployCountStmt = $pdo->prepare(
+              'SELECT COUNT(*)
+               FROM notification_inbox
+               WHERE (tenant_id = ? OR tenant_id IS NULL)
+                 AND event_name LIKE "dashboard_automation_%"'
+            );
+            $deployCountStmt->execute([(int)$user['tenant_id']]);
+            $deployEventsCount = (int)$deployCountStmt->fetchColumn();
+          }
+
           $queuePendingCount = 0;
           $queueFailedCount = 0;
           foreach ($notificationJobs as $job) {
@@ -284,20 +318,167 @@
               $deliveryFailedCount++;
             }
           }
+
+          $healthStatus = ($queueFailedCount === 0 && $deliveryFailedCount === 0) ? 'Healthy' : 'Needs Attention';
+
+          $itUsersSql = $usersBlacklistReady
+            ? 'SELECT id, register_id, full_name, email, role, is_active, blacklist, created_at FROM users WHERE tenant_id = ? ORDER BY id DESC LIMIT 200'
+            : 'SELECT id, register_id, full_name, email, role, is_active, created_at FROM users WHERE tenant_id = ? ORDER BY id DESC LIMIT 200';
+          $itUsersStmt = $pdo->prepare($itUsersSql);
+          $itUsersStmt->execute([(int)$user['tenant_id']]);
+          $itUsers = $itUsersStmt->fetchAll();
+
+          $supportActionOptions = [
+            'verification_attempts' => 'View Verification Attempts',
+            'login_lockout_status' => 'View Login Lockout Status',
+            'resend_verification' => 'Resend Verification',
+            'unlock_user' => 'Unlock User Account',
+            'clear_login_lockout' => 'Clear Login Lockout',
+          ];
+
+          $itErrorRows = [];
+          if (function_exists('notification_inbox_ready') && notification_inbox_ready($pdo)) {
+            $inboxErrStmt = $pdo->prepare(
+              'SELECT id, "notification_inbox" AS source_name, event_name, status, auth_valid, error_message, received_at AS event_time
+               FROM notification_inbox
+               WHERE (tenant_id = ? OR tenant_id IS NULL)
+                 AND (status = "failed" OR auth_valid = 0)
+               ORDER BY id DESC
+               LIMIT 40'
+            );
+            $inboxErrStmt->execute([(int)$user['tenant_id']]);
+            $itErrorRows = array_merge($itErrorRows, $inboxErrStmt->fetchAll());
+          }
+
+          foreach ($notificationJobs as $job) {
+            if ((string)($job['status'] ?? '') !== 'failed') {
+              continue;
+            }
+            $itErrorRows[] = [
+              'id' => (int)($job['id'] ?? 0),
+              'source_name' => 'notification_jobs',
+              'event_name' => (string)($job['event_name'] ?? ''),
+              'status' => (string)($job['status'] ?? ''),
+              'auth_valid' => 1,
+              'error_message' => (string)($job['last_error'] ?? ''),
+              'event_time' => (string)($job['updated_at'] ?? ''),
+            ];
+          }
         ?>
         <div class="card" style="margin-bottom: 14px;">
           <h3>IT Operations Center</h3>
           <p>Platform operations visibility and incident-response shortcuts for IT.</p>
           <div class="grid">
+            <div class="card"><strong><?= h($healthStatus) ?></strong><br><span class="muted">System Health</span></div>
             <div class="card"><strong><?= (int)$queuePendingCount ?></strong><br><span class="muted">Queue Pending/Retrying</span></div>
             <div class="card"><strong><?= (int)$queueFailedCount ?></strong><br><span class="muted">Queue Failed</span></div>
             <div class="card"><strong><?= (int)$deliveryFailedCount ?></strong><br><span class="muted">Delivery Failed</span></div>
-            <div class="card"><strong><?= count($dashboardAutomationRows ?? []) ?></strong><br><span class="muted">Deploy Events</span></div>
+            <div class="card"><strong><?= (int)$deployEventsCount ?></strong><br><span class="muted">Deploy Events</span></div>
+            <div class="card"><strong><?= (int)($roleCounts['it_count'] ?? 0) ?></strong><br><span class="muted">IT Users</span></div>
+            <div class="card"><strong><?= (int)($roleCounts['admin_count'] ?? 0) ?></strong><br><span class="muted">Admin Users</span></div>
+            <div class="card"><strong><?= (int)($roleCounts['manager_count'] ?? 0) ?></strong><br><span class="muted">Management Users</span></div>
+            <div class="card"><strong><?= (int)($roleCounts['student_count'] ?? 0) ?></strong><br><span class="muted">Student Users</span></div>
+            <div class="card"><strong><?= (int)$blacklistedCount ?></strong><br><span class="muted">Blacklisted Users</span></div>
+            <div class="card"><strong><?= (int)($roleCounts['inactive_count'] ?? 0) ?></strong><br><span class="muted">Disabled Accounts</span></div>
           </div>
           <p style="margin-top:10px;">
             <a class="btn" href="<?= h(app_route('identity_diagnostics')) ?>">Identity Diagnostics</a>
             <a class="btn" href="<?= h(app_route('phone_codes')) ?>">Phone Codes</a>
           </p>
+        </div>
+
+        <div class="card" style="margin-bottom: 14px;">
+          <h3>Tenant User Operations</h3>
+          <p>One table for role, status, blacklist, and support actions.</p>
+          <?php if ($itUsers === []): ?>
+            <p>No users found in this tenant.</p>
+          <?php else: ?>
+            <table class="table">
+              <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Blacklist</th><th>Role/Status Update</th><th>Blacklist Toggle</th><th>Support Action</th></tr></thead>
+              <tbody>
+              <?php foreach ($itUsers as $itUser): ?>
+                <?php
+                  $itUserId = (int)($itUser['id'] ?? 0);
+                  $itRole = (string)($itUser['role'] ?? 'student');
+                  $itActive = (int)($itUser['is_active'] ?? 1) === 1;
+                  $itFlag = (int)($itUser['blacklist'] ?? 0) === 1;
+                ?>
+                <tr>
+                  <td><?= (int)($itUser['register_id'] ?? $itUserId) ?></td>
+                  <td><?= h((string)($itUser['full_name'] ?? '')) ?></td>
+                  <td><?= h((string)($itUser['email'] ?? '')) ?></td>
+                  <td><?= h($itRole) ?></td>
+                  <td><?= $itActive ? 'active' : 'disabled' ?></td>
+                  <td><?= $usersBlacklistReady ? ($itFlag ? 'blacklist (1)' : 'whitelist (0)') : 'n/a' ?></td>
+                  <td>
+                    <form method="post" action="<?= h(app_route('user_role_status_update')) ?>">
+                      <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+                      <input type="hidden" name="user_id" value="<?= $itUserId ?>">
+                      <select name="role" required>
+                        <option value="student" <?= $itRole === 'student' ? 'selected' : '' ?>>student</option>
+                        <option value="manager" <?= $itRole === 'manager' ? 'selected' : '' ?>>manager</option>
+                        <option value="admin" <?= $itRole === 'admin' ? 'selected' : '' ?>>admin</option>
+                        <option value="it" <?= $itRole === 'it' ? 'selected' : '' ?>>it</option>
+                      </select>
+                      <select name="is_active" required>
+                        <option value="1" <?= $itActive ? 'selected' : '' ?>>active</option>
+                        <option value="0" <?= !$itActive ? 'selected' : '' ?>>disabled</option>
+                      </select>
+                      <button class="btn" type="submit">Update</button>
+                    </form>
+                  </td>
+                  <td>
+                    <?php if ($usersBlacklistReady): ?>
+                      <form method="post" action="<?= h(app_route('user_blacklist_toggle')) ?>">
+                        <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+                        <input type="hidden" name="user_id" value="<?= $itUserId ?>">
+                        <input type="hidden" name="blacklist" value="<?= $itFlag ? 0 : 1 ?>">
+                        <button class="btn" type="submit"><?= $itFlag ? 'Whitelist' : 'Blacklist' ?></button>
+                      </form>
+                    <?php else: ?>
+                      <span class="muted">migration required</span>
+                    <?php endif; ?>
+                  </td>
+                  <td>
+                    <form method="post" action="<?= h(app_route('admin_user_support')) ?>">
+                      <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+                      <input type="hidden" name="target_email" value="<?= h((string)($itUser['email'] ?? '')) ?>">
+                      <select name="support_action" required>
+                        <?php foreach ($supportActionOptions as $supportActionValue => $supportActionLabel): ?>
+                          <option value="<?= h($supportActionValue) ?>"><?= h($supportActionLabel) ?></option>
+                        <?php endforeach; ?>
+                      </select>
+                      <button class="btn" type="submit">Run</button>
+                    </form>
+                  </td>
+                </tr>
+              <?php endforeach; ?>
+              </tbody>
+            </table>
+          <?php endif; ?>
+        </div>
+
+        <div class="card" style="margin-bottom: 14px;">
+          <h3>Operations Logs and Errors</h3>
+          <?php if ($itErrorRows === []): ?>
+            <p>No recent log errors.</p>
+          <?php else: ?>
+            <table class="table">
+              <thead><tr><th>ID</th><th>Source</th><th>Event</th><th>Status</th><th>Error</th><th>Time</th></tr></thead>
+              <tbody>
+              <?php foreach ($itErrorRows as $logRow): ?>
+                <tr>
+                  <td><?= (int)($logRow['id'] ?? 0) ?></td>
+                  <td><?= h((string)($logRow['source_name'] ?? '')) ?></td>
+                  <td><?= h((string)($logRow['event_name'] ?? '')) ?></td>
+                  <td><?= h((string)($logRow['status'] ?? '')) ?></td>
+                  <td><?= h((string)($logRow['error_message'] ?? '')) ?></td>
+                  <td><?= h((string)($logRow['event_time'] ?? '')) ?></td>
+                </tr>
+              <?php endforeach; ?>
+              </tbody>
+            </table>
+          <?php endif; ?>
         </div>
       <?php endif; ?>
 
@@ -421,7 +602,7 @@
       </div>
       <?php endif; ?>
     <?php endif; ?>
-    <?php if (in_array($user['role'], ['admin', 'it'], true)): ?>
+    <?php if ($isAdmin): ?>
       <div class="card" style="margin-bottom: 14px;">
         <h3>Blacklist Management</h3>
         <p>Admin and IT use global Registration ID (users.register_id) or email across all tenants. For non-registered persons, use email only. Use Preview Person before adding the blacklist row.</p>
@@ -666,7 +847,7 @@
         $adminSupportAuditRows = $supportAuditStmt->fetchAll();
       }
     ?>
-    <?php if (in_array($user['role'], ['admin', 'it'], true)): ?>
+    <?php if ($isAdmin): ?>
       <div class="grid" style="margin-bottom: 14px;">
         <div class="card">
           <h3>New Registrations (7 days)</h3>
@@ -727,7 +908,7 @@
       </div>
     <?php endif; ?>
 
-    <?php if (in_array($user['role'], ['admin', 'it'], true)): ?>
+    <?php if ($isAdmin): ?>
       <div class="card" style="margin-bottom: 14px;">
         <h3>Admin Support Audit Events</h3>
         <p>Privileged support actions are logged for traceability.</p>
@@ -770,7 +951,7 @@
       </div>
     <?php endif; ?>
 
-    <?php if (in_array($user['role'], ['admin', 'it'], true)): ?>
+    <?php if ($isAdmin): ?>
       <div class="card" style="margin-bottom:14px;">
         <h3>Dashboard Automation Deploy Events</h3>
         <p>Signed n8n deployment actions (check/apply/rollback/register) are listed here.</p>
