@@ -4059,14 +4059,9 @@ if ($page === 'form_builder_save' && $_SERVER['REQUEST_METHOD'] === 'POST' && $p
     }
   }
 
-  $targetStatus = 'draft';
-  if ($builderType === 'scholarship') {
-    $targetStatus = $saveAction === 'publish' ? 'published' : 'draft';
-    if (!in_array($targetStatus, ['draft', 'published'], true)) {
-      $targetStatus = 'draft';
-    }
-  } elseif ($saveAction === 'publish') {
-    $error = 'Form Builder: publish is available for scholarship mode only.';
+  $targetStatus = $saveAction === 'publish' ? 'published' : 'draft';
+  if (!in_array($targetStatus, ['draft', 'published'], true)) {
+    $targetStatus = 'draft';
   }
 
   if ($title === '') {
@@ -4082,7 +4077,9 @@ if ($page === 'form_builder_save' && $_SERVER['REQUEST_METHOD'] === 'POST' && $p
   }
 
   if ($error === '' && $builderType !== 'scholarship') {
-    $message = 'Form Builder: ' . $builderType . ' draft is ready in the editor. Persistent save is currently enabled for scholarships only.';
+    $message = $targetStatus === 'published'
+      ? 'Form Builder: ' . $builderType . ' marked ready to publish in the editor. Persistent save is currently enabled for scholarships only.'
+      : 'Form Builder: ' . $builderType . ' draft is ready in the editor. Persistent save is currently enabled for scholarships only.';
   }
 
   if ($error === '' && $builderType === 'scholarship') {
