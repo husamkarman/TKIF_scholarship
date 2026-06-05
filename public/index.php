@@ -507,6 +507,37 @@ function app_asset(string $path): string
   return app_base_path() . '/' . $trimmed;
 }
 
+function dashboard_automation_audit_dir(): string
+{
+  return dirname(__DIR__) . '/n8n/workflows/audit';
+}
+
+function dashboard_automation_safe_task_id(string $raw): string
+{
+  $safe = preg_replace('/[^a-zA-Z0-9_\-]+/', '_', trim($raw));
+  $safe = trim((string)$safe, '_-');
+  if ($safe === '') {
+    $safe = 'task_' . (string)time();
+  }
+  return substr($safe, 0, 80);
+}
+
+function dashboard_automation_is_safe_patch_file(string $candidatePath, string $auditDir): bool
+{
+  if (!is_file($candidatePath) || !str_ends_with($candidatePath, '.diff')) {
+    return false;
+  }
+
+  $auditReal = realpath($auditDir);
+  $fileReal = realpath($candidatePath);
+  if (!is_string($auditReal) || !is_string($fileReal) || $auditReal === '' || $fileReal === '') {
+    return false;
+  }
+
+  $prefix = rtrim($auditReal, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+  return str_starts_with($fileReal, $prefix);
+}
+
 function scholarship_node_upload_relative_dir(string $kind): string
 {
   $safeKind = $kind === 'pdfs' ? 'pdfs' : 'images';
@@ -2910,6 +2941,139 @@ if ($page === 'notification_inbox_receive') {
   ]);
 
   json_response(202, ['ok' => true, 'notification_id' => (int)$pdo->lastInsertId()]);
+}
+
+if ($page === 'dashboard_automation_apply') {
+  if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    json_response(405, ['ok' => false, 'error' => 'method_not_allowed']);
+  }
+
+  $workerToken = trim((string)($config['notifications']['worker_token'] ?? ''));
+  if ($workerToken === '') {
+    $workerToken = trim((string)($config['notifications']['internal_secret'] ?? ''));
+  }
+
+  $providedToken = request_header_value('X-Worker-Token');
+  if ($providedToken === '') {
+    $providedToken = trim((string)($_POST['token'] ?? ''));
+  }
+
+  if ($workerToken === '' || !hash_equals($workerToken, $providedToken)) {
+    json_response(401, ['ok' => false, 'error' => 'invalid_worker_token']);
+  }
+
+  $rawBody = file_get_contents('php://input');
+  $rawBody = is_string($rawBody) ? $rawBody : '';
+  $payload = json_decode($rawBody, true);
+  if (!is_array($payload)) {
+    $payload = $_POST;
+  }
+
+  $mode = strtolower(trim((string)($payload['mode'] ?? 'register_deploy')));
+  if (!in_array($mode, ['register_deploy', 'check', 'apply', 'rollback'], true)) {
+    json_response(422, ['ok' => false, 'error' => 'invalid_mode']);
+  }
+
+  $taskId = dashboard_automation_safe_task_id((string)($payload['task_id'] ?? 'task_' . (string)time()));
+  $workspacePath = dirname(__DIR__);
+  $auditDir = dashboard_automation_audit_dir();
+  if (!is_dir($auditDir)) {
+    @mkdir($auditDir, 0775, true);
+  }
+
+  if (!is_dir($auditDir)) {
+    json_response(500, ['ok' => false, 'error' => 'audit_dir_unavailable']);
+  }
+
+  $stamp = gmdate('Y-m-d_H-i-s');
+  $auditLog = $auditDir . '/apply_audit.log';
+  $patchFile = trim((string)($payload['patch_file'] ?? ''));
+  $patchDiff = (string)($payload['patch_diff'] ?? '');
+
+  if ($mode !== 'register_deploy') {
+    if ($patchFile !== '') {
+      if (!dashboard_automation_is_safe_patch_file($patchFile, $auditDir)) {
+        json_response(422, ['ok' => false, 'error' => 'unsafe_or_missing_patch_file']);
+      }
+    } elseif (trim($patchDiff) !== '') {
+      $patchFile = $auditDir . '/incoming_patch_' . $taskId . '_' . $stamp . '.diff';
+      file_put_contents($patchFile, $patchDiff, LOCK_EX);
+      if (!dashboard_automation_is_safe_patch_file($patchFile, $auditDir)) {
+        json_response(500, ['ok' => false, 'error' => 'failed_to_create_patch_file']);
+      }
+    } else {
+      json_response(422, ['ok' => false, 'error' => 'missing_patch_data']);
+    }
+  }
+
+  $result = [
+    'ok' => true,
+    'mode' => $mode,
+    'task_id' => $taskId,
+    'workspace' => $workspacePath,
+    'patch_file' => $patchFile,
+  ];
+
+  if (in_array($mode, ['check', 'apply', 'rollback'], true)) {
+    $checkOut = [];
+    $checkCode = 0;
+    $checkCmd = 'cd ' . escapeshellarg($workspacePath) . ' && git apply --check ' . escapeshellarg($patchFile) . ' 2>&1';
+    exec($checkCmd, $checkOut, $checkCode);
+    $checkOutput = trim(implode("\n", $checkOut));
+    $result['preflight_ok'] = ($checkCode === 0);
+    $result['preflight_output'] = $checkOutput;
+
+    if ($checkCode !== 0) {
+      $result['ok'] = false;
+      $result['error'] = 'apply_check_failed';
+    } elseif ($mode === 'apply' || $mode === 'rollback') {
+      $applyOut = [];
+      $applyCode = 0;
+      $applyCmd = $mode === 'rollback'
+        ? ('cd ' . escapeshellarg($workspacePath) . ' && git apply -R ' . escapeshellarg($patchFile) . ' 2>&1')
+        : ('cd ' . escapeshellarg($workspacePath) . ' && git apply ' . escapeshellarg($patchFile) . ' 2>&1');
+      exec($applyCmd, $applyOut, $applyCode);
+      $applyOutput = trim(implode("\n", $applyOut));
+      $result['apply_ok'] = ($applyCode === 0);
+      $result['apply_output'] = $applyOutput;
+      if ($applyCode !== 0) {
+        $result['ok'] = false;
+        $result['error'] = $mode === 'rollback' ? 'rollback_failed' : 'apply_failed';
+      }
+    }
+  }
+
+  $auditEntry = [
+    'timestamp' => gmdate('c'),
+    'event' => 'dashboard_automation_' . $mode,
+    'task_id' => $taskId,
+    'ok' => (bool)($result['ok'] ?? false),
+    'patch_file' => $patchFile,
+    'source_ip' => trim((string)($_SERVER['REMOTE_ADDR'] ?? '')),
+  ];
+  file_put_contents($auditLog, json_encode($auditEntry, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . PHP_EOL, FILE_APPEND | LOCK_EX);
+
+  if ($pdo && function_exists('notification_inbox_ready') && notification_inbox_ready($pdo)) {
+    persist_notification_inbox(
+      $pdo,
+      [
+        'event' => 'dashboard_automation_' . $mode,
+        'notification_type' => 'webhook',
+        'route' => 'dashboard_automation',
+        'task_id' => $taskId,
+        'result' => $result,
+      ],
+      1,
+      (bool)($result['ok'] ?? false) ? 'processed' : 'failed',
+      (string)($result['error'] ?? ''),
+      [
+        'content_type' => request_header_value('Content-Type'),
+        'x_worker_token_present' => request_header_value('X-Worker-Token') !== '' ? '1' : '0',
+      ]
+    );
+  }
+
+  json_response((bool)($result['ok'] ?? false) ? 200 : 422, ['ok' => (bool)($result['ok'] ?? false), 'result' => $result]);
 }
 
 if ($page === 'logout') {

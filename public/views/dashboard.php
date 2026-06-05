@@ -598,6 +598,19 @@
         $notificationRows = $notificationStmt->fetchAll();
       }
 
+      $dashboardAutomationRows = [];
+      if (in_array($user['role'], ['admin', 'it'], true) && function_exists('notification_inbox_ready') && notification_inbox_ready($pdo)) {
+        $automationStmt = $pdo->prepare(
+          'SELECT id, event_name, status, auth_valid, source_ip, received_at
+           FROM notification_inbox
+           WHERE event_name LIKE "dashboard_automation_%"
+           ORDER BY id DESC
+           LIMIT 20'
+        );
+        $automationStmt->execute();
+        $dashboardAutomationRows = $automationStmt->fetchAll();
+      }
+
       $adminSupportAuditRows = [];
       if (in_array($user['role'], ['admin', 'it'], true)) {
         $supportAuditStmt = $pdo->prepare(
@@ -716,6 +729,30 @@
     <?php endif; ?>
 
     <?php if (in_array($user['role'], ['admin', 'it'], true)): ?>
+      <div class="card" style="margin-bottom:14px;">
+        <h3>Dashboard Automation Deploy Events</h3>
+        <p>Signed n8n deployment actions (check/apply/rollback/register) are listed here.</p>
+        <?php if ($dashboardAutomationRows === []): ?>
+          <p>No dashboard automation events captured yet.</p>
+        <?php else: ?>
+          <table class="table">
+            <thead><tr><th>ID</th><th>Event</th><th>Status</th><th>Auth</th><th>IP</th><th>Received</th></tr></thead>
+            <tbody>
+            <?php foreach ($dashboardAutomationRows as $da): ?>
+              <tr>
+                <td><?= (int)$da['id'] ?></td>
+                <td><?= h((string)$da['event_name']) ?></td>
+                <td><?= h((string)$da['status']) ?></td>
+                <td><?= (int)($da['auth_valid'] ?? 0) === 1 ? 'valid' : 'invalid' ?></td>
+                <td><?= h((string)($da['source_ip'] ?? '')) ?></td>
+                <td><?= h((string)($da['received_at'] ?? '')) ?></td>
+              </tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+        <?php endif; ?>
+      </div>
+
       <div class="card" style="margin-bottom:14px;">
         <h3>Internal Notification Inbox</h3>
         <?php if ($notificationRows === []): ?>

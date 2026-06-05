@@ -1,0 +1,878 @@
+{
+  "name": "Dashboard Automation Step 7 - Deployment Gating and Release Checklist",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        220,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={\n  \"task_id\": \"{{ $json.task_id || ('task-' + Date.now()) }}\",\n  \"objective\": \"{{ $json.objective || 'Implement approved dashboard scope incrementally' }}\",\n  \"workspace_path\": \"{{ $json.workspace_path || '/opt/homebrew/var/www/TKIF_scholarship' }}\",\n  \"scope_files\": {{ $json.scope_files || ['public/views/dashboard.php','public/index.php','app/lib/profile.php','sql/schema.sql'] }},\n  \"constraints\": {{ $json.constraints || [\n    'Do not rebuild system',\n    'Keep existing scholarship functionality',\n    'No AI analytics/recommendations',\n    'No finance/revenue/accounting features',\n    'Use existing routes, roles, and design system'\n  ] }},\n  \"acceptance_criteria\": {{ $json.acceptance_criteria || [\n    'Role-based visibility preserved',\n    'No hardcoded KPI values',\n    'Empty states are safe',\n    'Exports remain permission-gated'\n  ] }}\n}"
+      },
+      "id": "2",
+      "name": "Normalize Task Input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        460,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=WORKSPACE='{{$json.workspace_path}}'\nif [ ! -d \"$WORKSPACE\" ]; then\n  echo '{\"error\":\"workspace_not_found\"}'\n  exit 1\nfi\ncd \"$WORKSPACE\"\nBRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')\nSTATUS=$(git status --short 2>/dev/null | head -n 20 | sed ':a;N;$!ba;s/\\n/\\\\n/g')\nFILES=$(find app public sql -type f | head -n 200 | sed ':a;N;$!ba;s/\\n/\\\\n/g')\nprintf '{\"workspace\":\"%s\",\"branch\":\"%s\",\"status\":\"%s\",\"files\":\"%s\"}\\n' \"$WORKSPACE\" \"$BRANCH\" \"$STATUS\" \"$FILES\""
+      },
+      "id": "3",
+      "name": "Gather Repository Context",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        700,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const task = $('Normalize Task Input').first().json;\nlet context = {};\ntry {\n  context = JSON.parse(($json.stdout || '{}').trim());\n} catch (e) {\n  context = { parse_error: String(e) };\n}\n\nconst codeCreationPrompt = [\n  'Role: Code Creation Agent',\n  'You are modifying an existing MultiScholarship platform.',\n  'Constraints:',\n  ...(task.constraints || []).map((c) => `- ${c}`),\n  'Task Objective:',\n  task.objective || '',\n  'Required Output JSON keys:',\n  '- changed_files: string[]',\n  '- patch_diff: string (unified diff)',\n  '- migration_sql: string|null',\n  '- test_commands: string[]',\n  '- risk_notes: string[]',\n  'Use existing architecture and keep changes minimal and reversible.'\n].join('\\n');\n\nconst validationPrompt = [\n  'Role: Validation Agent',\n  'Validate generated patch for logic, behavior, and acceptance criteria.',\n  'Acceptance Criteria:',\n  ...((task.acceptance_criteria || []).map((c) => `- ${c}`)),\n  'Required Output JSON keys:',\n  '- pass: boolean',\n  '- defects: array of {severity,file,issue,fix}',\n  '- regression_risks: string[]',\n  '- missing_tests: string[]'\n].join('\\n');\n\nconst securityPrompt = [\n  'Role: Security Review Agent',\n  'Check RBAC, input validation, CSRF, auth/session boundaries, secret exposure, and unsafe dependencies.',\n  'Required Output JSON keys:',\n  '- pass: boolean',\n  '- findings: array of {severity,file,issue,fix}',\n  '- blocked: boolean'\n].join('\\n');\n\nconst uiPrompt = [\n  'Role: UI Error Fixing Agent',\n  'Check responsive layout, accessibility, empty/loading/error states, and interaction defects.',\n  'Required Output JSON keys:',\n  '- pass: boolean',\n  '- ui_issues: array of {severity,file,issue,fix}',\n  '- css_or_markup_patch: string'\n].join('\\n');\n\nreturn [{\n  json: {\n    ...task,\n    repository_context: context,\n    prompts: {\n      code_creation: codeCreationPrompt,\n      validation: validationPrompt,\n      security: securityPrompt,\n      ui: uiPrompt\n    }\n  }\n}];"
+      },
+      "id": "4",
+      "name": "Build Agent Prompts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        940,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $env.AGENT_ORCHESTRATOR_URL || '' }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "5",
+      "name": "Agent Endpoint Configured?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1180,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.AGENT_ORCHESTRATOR_URL || '') + '/code-creation' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"task_id\": $json.task_id,\n  \"workspace_path\": $json.workspace_path,\n  \"repository_context\": $json.repository_context,\n  \"prompt\": $json.prompts.code_creation\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "6",
+      "name": "Code Creation Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1420,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    pass: false,\n    reason: 'missing_AGENT_ORCHESTRATOR_URL',\n    next_action: 'Configure AGENT_ORCHESTRATOR_URL env var in n8n and re-run.'\n  }\n}];"
+      },
+      "id": "7",
+      "name": "Endpoint Missing - Stop",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1420,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json;\nconst changedFiles = payload.changed_files || [];\nconst patch = payload.patch_diff || '';\nconst valid = Array.isArray(changedFiles) && changedFiles.length > 0 && typeof patch === 'string' && patch.trim() !== '';\nreturn [{ json: { ...payload, output_contract_ok: valid } }];"
+      },
+      "id": "8",
+      "name": "Check Code Agent Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.output_contract_ok }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "9",
+      "name": "Code Output Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1880,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.AGENT_ORCHESTRATOR_URL || '') + '/validation' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"task_id\": $json.task_id || $('Build Agent Prompts').first().json.task_id,\n  \"prompt\": $('Build Agent Prompts').first().json.prompts.validation,\n  \"candidate_patch\": {\n    \"changed_files\": $json.changed_files,\n    \"patch_diff\": $json.patch_diff,\n    \"migration_sql\": $json.migration_sql || null\n  }\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "10",
+      "name": "Validation Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2110,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.pass }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "11",
+      "name": "Validation Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2330,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "options": {
+          "webhookSuffix": "dashboard-step7-approval"
+        }
+      },
+      "id": "12",
+      "name": "Human Approval Gate",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        3430,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.approved || false }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "13",
+      "name": "Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3650,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={\n  \"status\": \"approved_step7\",\n  \"message\": \"Step 7 complete. Deployment checklist reviewed and deploy gate approved.\",\n  \"next_step\": \"Production release execution and post-release monitoring\"\n}"
+      },
+      "id": "14",
+      "name": "Step 7 Complete",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        6090,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={\n  \"status\": \"needs_changes\",\n  \"message\": \"Step 7 stopped: contract/validation/security/UI/apply/verification/deployment gate failed.\"\n}"
+      },
+      "id": "15",
+      "name": "Stop - Needs Changes",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        4770,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.AGENT_ORCHESTRATOR_URL || \"\") + '/security-review' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"task_id\": $('Build Agent Prompts').first().json.task_id,\n  \"prompt\": $('Build Agent Prompts').first().json.prompts.security,\n  \"candidate_patch\": {\n    \"changed_files\": $('Check Code Agent Output').first().json.changed_files,\n    \"patch_diff\": $('Check Code Agent Output').first().json.patch_diff,\n    \"migration_sql\": $('Check Code Agent Output').first().json.migration_sql || null\n  },\n  \"validation_summary\": $json\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "16",
+      "name": "Security Review Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2550,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ ($json.pass === true) && ($json.blocked !== true) }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "17",
+      "name": "Security Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2770,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.AGENT_ORCHESTRATOR_URL || \"\") + '/ui-fixing' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"task_id\": $('Build Agent Prompts').first().json.task_id,\n  \"prompt\": $('Build Agent Prompts').first().json.prompts.ui,\n  \"candidate_patch\": {\n    \"changed_files\": $('Check Code Agent Output').first().json.changed_files,\n    \"patch_diff\": $('Check Code Agent Output').first().json.patch_diff,\n    \"migration_sql\": $('Check Code Agent Output').first().json.migration_sql || null\n  },\n  \"validation_summary\": $('Validation Agent').first().json,\n  \"security_summary\": $json\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "18",
+      "name": "UI Error Fixing Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2990,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.pass === true }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "19",
+      "name": "UI Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3210,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const task = $('Build Agent Prompts').first().json;\nconst patch = $('Check Code Agent Output').first().json.patch_diff || '';\nconst changedFiles = $('Check Code Agent Output').first().json.changed_files || [];\nconst now = new Date();\nconst stamp = now.toISOString().replace(/[:.]/g, '-');\nconst taskId = String(task.task_id || ('task-' + Date.now()));\nconst patchB64 = Buffer.from(String(patch), 'utf8').toString('base64');\nreturn [{ json: {\n  task_id: taskId,\n  workspace_path: task.workspace_path || '/opt/homebrew/var/www/TKIF_scholarship',\n  changed_files: changedFiles,\n  patch_b64: patchB64,\n  apply_stamp: stamp\n} }];"
+      },
+      "id": "20",
+      "name": "Build Apply Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3870,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=WORKSPACE='{{$json.workspace_path}}'\nTASK='{{$json.task_id}}'\nSTAMP='{{$json.apply_stamp}}'\nPATCH_B64='{{$json.patch_b64}}'\nAUDIT_DIR=\"$WORKSPACE/n8n/workflows/audit\"\nPATCH_FILE=\"$AUDIT_DIR/patch_${TASK}_${STAMP}.diff\"\nROLLBACK_FILE=\"$AUDIT_DIR/rollback_${TASK}_${STAMP}.diff\"\nAUDIT_LOG=\"$AUDIT_DIR/apply_audit.log\"\n\nmkdir -p \"$AUDIT_DIR\"\nif [ ! -d \"$WORKSPACE\" ]; then\n  echo '{\"apply_ok\":false,\"error\":\"workspace_not_found\"}'\n  exit 0\nfi\n\ncd \"$WORKSPACE\"\n# Create rollback artifact from current working tree state\ngit --no-pager diff > \"$ROLLBACK_FILE\" 2>/dev/null || true\n\n# Decode patch payload\nprintf '%s' \"$PATCH_B64\" | base64 --decode > \"$PATCH_FILE\" 2>/dev/null\nif [ ! -s \"$PATCH_FILE\" ]; then\n  printf '{\"apply_ok\":false,\"error\":\"empty_patch\",\"rollback_file\":\"%s\"}\\n' \"$ROLLBACK_FILE\"\n  exit 0\nfi\n\n# Preflight check first\nif ! git apply --check \"$PATCH_FILE\" 2>/tmp/n8n_apply_err.txt; then\n  ERR=$(cat /tmp/n8n_apply_err.txt | sed ':a;N;$!ba;s/\\n/\\\\n/g')\n  printf '{\"apply_ok\":false,\"error\":\"apply_check_failed\",\"details\":\"%s\",\"rollback_file\":\"%s\",\"patch_file\":\"%s\"}\\n' \"$ERR\" \"$ROLLBACK_FILE\" \"$PATCH_FILE\"\n  exit 0\nfi\n\n# Apply patch\nif ! git apply \"$PATCH_FILE\" 2>/tmp/n8n_apply_err2.txt; then\n  ERR=$(cat /tmp/n8n_apply_err2.txt | sed ':a;N;$!ba;s/\\n/\\\\n/g')\n  printf '{\"apply_ok\":false,\"error\":\"apply_failed\",\"details\":\"%s\",\"rollback_file\":\"%s\",\"patch_file\":\"%s\"}\\n' \"$ERR\" \"$ROLLBACK_FILE\" \"$PATCH_FILE\"\n  exit 0\nfi\n\nCHANGED=$(git status --short | sed ':a;N;$!ba;s/\\n/\\\\n/g')\nTS=$(date -u +\"%Y-%m-%dT%H:%M:%SZ\")\nprintf '{\"timestamp\":\"%s\",\"task_id\":\"%s\",\"patch_file\":\"%s\",\"rollback_file\":\"%s\",\"changed\":\"%s\"}\\n' \"$TS\" \"$TASK\" \"$PATCH_FILE\" \"$ROLLBACK_FILE\" \"$CHANGED\" >> \"$AUDIT_LOG\"\nprintf '{\"apply_ok\":true,\"patch_file\":\"%s\",\"rollback_file\":\"%s\",\"audit_log\":\"%s\",\"changed\":\"%s\"}\\n' \"$PATCH_FILE\" \"$ROLLBACK_FILE\" \"$AUDIT_LOG\" \"$CHANGED\""
+      },
+      "id": "21",
+      "name": "Controlled Patch Apply",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        4090,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ JSON.parse($json.stdout || \"{}\").apply_ok === true }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "22",
+      "name": "Apply Succeeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4310,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "let apply = {}; try { apply = JSON.parse($json.stdout || '{}'); } catch (e) { apply = { apply_ok: false, parse_error: String(e) }; } const meta = $('Build Apply Metadata').first().json || {}; return [{ json: { ...meta, ...apply } }];"
+      },
+      "id": "23",
+      "name": "Parse Apply Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4550,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=WORKSPACE='{{$json.workspace_path}}'\nif [ ! -d \"$WORKSPACE\" ]; then\n  printf '{\"verify_ok\":false,\"error\":\"workspace_not_found\"}\\n'\n  exit 0\nfi\ncd \"$WORKSPACE\"\nVERIFY_FAIL=0\nVERIFY_LOG=''\nCHANGED=$(git diff --name-only | tr '\\n' ' ')\nfor f in $(git diff --name-only); do\n  case \"$f\" in\n    *.php)\n      OUT=$(php -l \"$f\" 2>&1)\n      CODE=$?\n      if [ $CODE -ne 0 ]; then\n        VERIFY_FAIL=1\n        VERIFY_LOG=\"$VERIFY_LOG\\n[php-lint-fail] $f :: $OUT\"\n      fi\n      ;;\n  esac\ndone\nif [ -x scripts/acceptance_smoke.sh ] && [ \"\\${SKIP_SMOKE:-0}\" != \"1\" ]; then\n  SMOKE_OUT=$(bash scripts/acceptance_smoke.sh http://localhost/TKIF_scholarship 2>&1)\n  SMOKE_CODE=$?\n  if [ $SMOKE_CODE -ne 0 ]; then\n    VERIFY_FAIL=1\n    VERIFY_LOG=\"$VERIFY_LOG\\n[smoke-fail] $SMOKE_OUT\"\n  fi\nfi\nif [ $VERIFY_FAIL -ne 0 ]; then\n  LOG=$(printf '%s' \"$VERIFY_LOG\" | sed ':a;N;$!ba;s/\\n/\\\\n/g')\n  CH=$(printf '%s' \"$CHANGED\" | sed ':a;N;$!ba;s/\\n/\\\\n/g')\n  printf '{\"verify_ok\":false,\"changed\":\"%s\",\"details\":\"%s\"}\\n' \"$CH\" \"$LOG\"\n  exit 0\nfi\nCH=$(printf '%s' \"$CHANGED\" | sed ':a;N;$!ba;s/\\n/\\\\n/g')\nprintf '{\"verify_ok\":true,\"changed\":\"%s\"}\\n' \"$CH\""
+      },
+      "id": "24",
+      "name": "Run Post-Apply Verification",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        4770,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ JSON.parse($json.stdout || \"{}\").verify_ok === true }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "25",
+      "name": "Verification Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4990,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=WORKSPACE='{{$json.workspace_path}}'\nPATCH_FILE='{{$json.patch_file || ''}}'\nAUDIT_LOG='{{$json.audit_log || ''}}'\nTASK='{{$json.task_id || 'unknown-task'}}'\nif [ ! -d \"$WORKSPACE\" ]; then\n  printf '{\"rollback_ok\":false,\"error\":\"workspace_not_found\"}\\n'\n  exit 0\nfi\ncd \"$WORKSPACE\"\nif [ -z \"$PATCH_FILE\" ] || [ ! -f \"$PATCH_FILE\" ]; then\n  printf '{\"rollback_ok\":false,\"error\":\"patch_file_missing\"}\\n'\n  exit 0\nfi\nif git apply -R \"$PATCH_FILE\" 2>/tmp/n8n_rollback_err.txt; then\n  TS=$(date -u +\"%Y-%m-%dT%H:%M:%SZ\")\n  if [ -n \"$AUDIT_LOG\" ]; then\n    printf '{\"timestamp\":\"%s\",\"task_id\":\"%s\",\"rollback\":\"success\",\"patch_file\":\"%s\"}\\n' \"$TS\" \"$TASK\" \"$PATCH_FILE\" >> \"$AUDIT_LOG\"\n  fi\n  printf '{\"rollback_ok\":true,\"patch_file\":\"%s\"}\\n' \"$PATCH_FILE\"\nelse\n  ERR=$(cat /tmp/n8n_rollback_err.txt | sed ':a;N;$!ba;s/\\n/\\\\n/g')\n  printf '{\"rollback_ok\":false,\"error\":\"rollback_failed\",\"details\":\"%s\"}\\n' \"$ERR\"\nfi"
+      },
+      "id": "26",
+      "name": "Auto Rollback On Verify Fail",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        5210,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={\n  \"status\": \"rolled_back_after_verify_failure\",\n  \"message\": \"Verification failed and automatic rollback was executed.\",\n  \"rollback_result\": $json.stdout || \"{}\"\n}"
+      },
+      "id": "27",
+      "name": "Rollback Completed",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        5430,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "let verify = {};\ntry {\n  verify = JSON.parse($json.stdout || '{}');\n} catch (e) {\n  verify = { verify_ok: false, parse_error: String(e) };\n}\nconst apply = $('Parse Apply Result').first().json || {};\nconst changedRaw = String(verify.changed || '').trim();\nconst changedFiles = changedRaw ? changedRaw.split(/\\s+/).filter(Boolean) : [];\nconst criticalPatterns = [/public\\/index\\.php$/, /sql\\//, /app\\/lib\\/profile\\.php$/];\nconst hasCritical = changedFiles.some((f) => criticalPatterns.some((rx) => rx.test(f)));\nconst checklist = [\n  { id: 'db-backup', title: 'Confirm latest DB backup exists and restore tested', required: hasCritical },\n  { id: 'rollback-ready', title: 'Verify rollback patch path and apply audit log are present', required: true },\n  { id: 'smoke-plan', title: 'Run post-deploy smoke tests for dashboard role views', required: true },\n  { id: 'rbac-check', title: 'Validate IT/Admin/Manager/Student role separation post-release', required: true },\n  { id: 'migration-window', title: 'Schedule migration/deploy window with owner approval', required: hasCritical },\n  { id: 'monitoring', title: 'Enable monitoring and error watch for first 30 minutes', required: true }\n];\nreturn [{ json: { ...apply, verify, changed_files: changedFiles, critical_change_detected: hasCritical, release_checklist: checklist } }];"
+      },
+      "id": "28",
+      "name": "Build Release Checklist",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5430,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "options": {
+          "webhookSuffix": "dashboard-step7-deploy-approval"
+        }
+      },
+      "id": "29",
+      "name": "Deployment Approval Gate",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        5650,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.approved || false }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "30",
+      "name": "Deploy Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5870,
+        100
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Task Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Task Input": {
+      "main": [
+        [
+          {
+            "node": "Gather Repository Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gather Repository Context": {
+      "main": [
+        [
+          {
+            "node": "Build Agent Prompts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Agent Prompts": {
+      "main": [
+        [
+          {
+            "node": "Agent Endpoint Configured?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent Endpoint Configured?": {
+      "main": [
+        [
+          {
+            "node": "Code Creation Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Endpoint Missing - Stop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code Creation Agent": {
+      "main": [
+        [
+          {
+            "node": "Check Code Agent Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Code Agent Output": {
+      "main": [
+        [
+          {
+            "node": "Code Output Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code Output Valid?": {
+      "main": [
+        [
+          {
+            "node": "Validation Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop - Needs Changes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validation Agent": {
+      "main": [
+        [
+          {
+            "node": "Validation Passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validation Passed?": {
+      "main": [
+        [
+          {
+            "node": "Security Review Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop - Needs Changes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Human Approval Gate": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [
+          {
+            "node": "Build Apply Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop - Needs Changes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Security Review Agent": {
+      "main": [
+        [
+          {
+            "node": "Security Passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Security Passed?": {
+      "main": [
+        [
+          {
+            "node": "UI Error Fixing Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop - Needs Changes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "UI Error Fixing Agent": {
+      "main": [
+        [
+          {
+            "node": "UI Passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "UI Passed?": {
+      "main": [
+        [
+          {
+            "node": "Human Approval Gate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop - Needs Changes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Apply Metadata": {
+      "main": [
+        [
+          {
+            "node": "Controlled Patch Apply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Controlled Patch Apply": {
+      "main": [
+        [
+          {
+            "node": "Apply Succeeded?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Succeeded?": {
+      "main": [
+        [
+          {
+            "node": "Parse Apply Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop - Needs Changes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Apply Result": {
+      "main": [
+        [
+          {
+            "node": "Run Post-Apply Verification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Post-Apply Verification": {
+      "main": [
+        [
+          {
+            "node": "Verification Passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verification Passed?": {
+      "main": [
+        [
+          {
+            "node": "Build Release Checklist",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Auto Rollback On Verify Fail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto Rollback On Verify Fail": {
+      "main": [
+        [
+          {
+            "node": "Rollback Completed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Release Checklist": {
+      "main": [
+        [
+          {
+            "node": "Deployment Approval Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deployment Approval Gate": {
+      "main": [
+        [
+          {
+            "node": "Deploy Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deploy Approved?": {
+      "main": [
+        [
+          {
+            "node": "Step 7 Complete",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop - Needs Changes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "versionId": "7",
+  "active": false,
+  "tags": [
+    {
+      "name": "dashboard"
+    },
+    {
+      "name": "automation"
+    },
+    {
+      "name": "step7"
+    }
+  ]
+}
