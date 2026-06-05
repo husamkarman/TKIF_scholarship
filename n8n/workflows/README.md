@@ -2,6 +2,33 @@
 
 Import `scholarship-submit.json` into n8n and activate it.
 
+## Step 2: Repo-Connected Agent Pipeline
+
+Import `dashboard-automation-step2.json` for the second-stage automation path.
+
+What this workflow does:
+- Loads repository context from your workspace path.
+- Builds agent prompts for Code Creation, Validation, Security, and UI agents.
+- Executes Code Creation Agent and Validation Agent through your agent orchestrator endpoint.
+- Enforces a human approval gate before progressing to the next step.
+- Stops safely when contract validation fails, validation fails, or approval is not granted.
+
+Required n8n environment variables:
+- `AGENT_ORCHESTRATOR_URL` (for example `http://agent-gateway:9000`)
+
+Optional workflow input payload fields:
+- `task_id`
+- `objective`
+- `workspace_path`
+- `scope_files`
+- `constraints`
+- `acceptance_criteria`
+
+Approval gate behavior:
+- Wait node webhook suffix: `dashboard-step2-approval`
+- Resume payload must include `approved=true` to pass.
+- Any other value keeps the run in `Stop - Needs Changes`.
+
 Webhook endpoint expected by PHP app:
 - POST `/webhook/scholarship-submit`
 
