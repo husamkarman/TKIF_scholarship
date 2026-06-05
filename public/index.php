@@ -1007,6 +1007,37 @@ function normalize_form_settings($settings): array
   ];
 }
 
+function normalize_form_theme($theme): array
+{
+  $input = is_array($theme) ? $theme : [];
+  $defaultTheme = [
+    'primary_color' => '#1f6feb',
+    'accent_color' => '#2da44e',
+    'background_color' => '#f6f8fa',
+    'surface_color' => '#ffffff',
+    'text_color' => '#1f2328',
+    'font_family' => 'system-ui',
+  ];
+
+  $hexPattern = '/^#[0-9a-fA-F]{6}$/';
+  $allowedFonts = ['system-ui', 'Georgia', 'Trebuchet MS', 'Verdana', 'Tahoma', 'Arial'];
+
+  $themeOut = $defaultTheme;
+  foreach (['primary_color', 'accent_color', 'background_color', 'surface_color', 'text_color'] as $colorKey) {
+    $value = trim((string)($input[$colorKey] ?? ''));
+    if ($value !== '' && preg_match($hexPattern, $value) === 1) {
+      $themeOut[$colorKey] = strtoupper($value);
+    }
+  }
+
+  $fontFamily = trim((string)($input['font_family'] ?? ''));
+  if (in_array($fontFamily, $allowedFonts, true)) {
+    $themeOut['font_family'] = $fontFamily;
+  }
+
+  return $themeOut;
+}
+
 function scholarship_schema_payload_parts($rawSchema): array
 {
   if (!is_array($rawSchema)) {
@@ -2760,6 +2791,7 @@ $formBuilderScholarshipTitle = '';
 $formBuilderScholarshipDescription = '';
 $formBuilderScholarshipStatus = 'draft';
 $formBuilderEntityType = 'scholarship';
+$formBuilderThemeJson = json_encode(normalize_form_theme([]), JSON_UNESCAPED_UNICODE);
 $formsLibraryRows = [];
 $formsLibrarySearch = '';
 $formsLibraryStatus = 'all';
@@ -4260,9 +4292,11 @@ if ($page === 'form_builder_save' && $_SERVER['REQUEST_METHOD'] === 'POST' && $p
   $selectedTemplate = trim((string)($_POST['selected_template'] ?? 'basic_application'));
   $rawSchema = json_decode((string)($_POST['form_schema_json'] ?? '[]'), true);
   $rawSettings = json_decode((string)($_POST['form_settings_json'] ?? '{}'), true);
+  $rawTheme = json_decode((string)($_POST['theme_json'] ?? '{}'), true);
   $schemaNodes = normalize_scholarship_nodes($rawSchema);
   $schema = flatten_scholarship_nodes($schemaNodes);
   $formSettings = normalize_form_settings($rawSettings);
+  $formTheme = normalize_form_theme($rawTheme);
 
   $builderTemplates = form_builder_templates_for_builder_type($builderType);
   $builderTemplateKeys = array_keys($builderTemplates);
@@ -4308,7 +4342,10 @@ if ($page === 'form_builder_save' && $_SERVER['REQUEST_METHOD'] === 'POST' && $p
       if (!is_string($settingsJson) || trim($settingsJson) === '') {
         $settingsJson = '{}';
       }
-      $themeJson = '{}';
+      $themeJson = json_encode($formTheme, JSON_UNESCAPED_UNICODE);
+      if (!is_string($themeJson) || trim($themeJson) === '') {
+        $themeJson = json_encode(normalize_form_theme([]), JSON_UNESCAPED_UNICODE);
+      }
 
       if ($formId > 0) {
         $updateStmt = $pdo->prepare('UPDATE forms SET title = ?, description = ?, status = ?, schema_json = ?, settings_json = ?, updated_at = NOW() WHERE id = ? AND tenant_id = ?');
@@ -4483,6 +4520,10 @@ if ($page === 'form_builder_save' && $_SERVER['REQUEST_METHOD'] === 'POST' && $p
   $formBuilderScholarshipDescription = $description;
   $formBuilderScholarshipStatus = $targetStatus;
   $formBuilderEntityType = $builderType;
+  $formBuilderThemeJson = json_encode($formTheme, JSON_UNESCAPED_UNICODE);
+  if (!is_string($formBuilderThemeJson) || trim($formBuilderThemeJson) === '') {
+    $formBuilderThemeJson = json_encode(normalize_form_theme([]), JSON_UNESCAPED_UNICODE);
+  }
 }
 
 if ($page === 'form_builder' && $pdo) {
@@ -4500,7 +4541,7 @@ if ($page === 'form_builder' && $pdo) {
   $formsReady = forms_tables_ready($pdo);
 
   if ($formsReady) {
-    $formsStmt = $pdo->prepare('SELECT id, title, description, status, schema_json, settings_json FROM forms WHERE tenant_id = ? ORDER BY id DESC LIMIT 200');
+    $formsStmt = $pdo->prepare('SELECT id, title, description, status, schema_json, settings_json, theme_json FROM forms WHERE tenant_id = ? ORDER BY id DESC LIMIT 200');
     $formsStmt->execute([(int)$actor['tenant_id']]);
     $formBuilderScholarships = $formsStmt->fetchAll();
   } else {
@@ -4575,6 +4616,11 @@ if ($page === 'form_builder' && $pdo) {
             $selectedBuilderType = $settingsBuilderType;
             $formBuilderEntityType = $settingsBuilderType;
           }
+          $themeRaw = json_decode((string)($scholarshipRow['theme_json'] ?? '{}'), true);
+          $themeJson = json_encode(normalize_form_theme($themeRaw), JSON_UNESCAPED_UNICODE);
+          if (is_string($themeJson) && trim($themeJson) !== '') {
+            $formBuilderThemeJson = $themeJson;
+          }
         }
         break;
       }
@@ -4582,6 +4628,7 @@ if ($page === 'form_builder' && $pdo) {
   } else {
     $formBuilderScholarshipId = 0;
     $formBuilderScholarshipStatus = 'draft';
+    $formBuilderThemeJson = json_encode(normalize_form_theme([]), JSON_UNESCAPED_UNICODE);
   }
 }
 

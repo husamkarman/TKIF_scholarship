@@ -16,6 +16,14 @@ if (!isset($templates[$selectedTemplate])) {
   $templateMeta = form_builder_starter_template($selectedTemplate);
 }
 $draftSchema = (string)($formBuilderDraftSchema ?? form_builder_starter_template_json($selectedTemplate));
+$draftTheme = (string)($formBuilderThemeJson ?? json_encode([
+  'primary_color' => '#1f6feb',
+  'accent_color' => '#2da44e',
+  'background_color' => '#f6f8fa',
+  'surface_color' => '#ffffff',
+  'text_color' => '#1f2328',
+  'font_family' => 'system-ui',
+], JSON_UNESCAPED_UNICODE));
 $scholarships = is_array($formBuilderScholarships ?? null) ? $formBuilderScholarships : [];
 $selectedScholarshipId = (int)($formBuilderScholarshipId ?? 0);
 $scholarshipTitle = (string)($formBuilderScholarshipTitle ?? '');
@@ -134,6 +142,8 @@ $loadTemplateButtonLabel = 'Load Template';
     <input type="hidden" name="form_id" id="fb_form_id" value="<?= (int)$selectedScholarshipId ?>">
     <input type="hidden" name="scholarship_id" id="fb_scholarship_id" value="<?= (int)$selectedScholarshipId ?>">
     <input type="hidden" name="selected_template" value="<?= h($selectedTemplate) ?>">
+    <input type="hidden" name="form_settings_json" id="fb_settings_json" value="{}">
+    <input type="hidden" name="theme_json" id="fb_theme_json" value='<?= h($draftTheme) ?>'>
     <input type="hidden" name="save_action" id="fb_save_action" value="save_draft">
 
     <label><?= h($builderTitleLabel) ?> Title</label>
@@ -152,6 +162,41 @@ $loadTemplateButtonLabel = 'Load Template';
       <option value="archived" <?= $scholarshipStatus === 'archived' ? 'selected' : '' ?>>archived</option>
     </select>
     <p style="color:#555; margin-top:6px;">Status is controlled by action: Save Draft or Publish.</p>
+
+    <h4>Theme</h4>
+    <div class="grid" style="margin-bottom: 12px;">
+      <div>
+        <label>Primary Color</label>
+        <input type="color" id="fb_theme_primary" value="#1f6feb">
+      </div>
+      <div>
+        <label>Accent Color</label>
+        <input type="color" id="fb_theme_accent" value="#2da44e">
+      </div>
+      <div>
+        <label>Background Color</label>
+        <input type="color" id="fb_theme_background" value="#f6f8fa">
+      </div>
+      <div>
+        <label>Surface Color</label>
+        <input type="color" id="fb_theme_surface" value="#ffffff">
+      </div>
+      <div>
+        <label>Text Color</label>
+        <input type="color" id="fb_theme_text" value="#1f2328">
+      </div>
+      <div>
+        <label>Font</label>
+        <select id="fb_theme_font">
+          <option value="system-ui">system-ui</option>
+          <option value="Georgia">Georgia</option>
+          <option value="Trebuchet MS">Trebuchet MS</option>
+          <option value="Verdana">Verdana</option>
+          <option value="Tahoma">Tahoma</option>
+          <option value="Arial">Arial</option>
+        </select>
+      </div>
+    </div>
 
     <div class="grid" style="align-items:start; margin-top: 12px;">
       <div class="card" style="margin:0;">
@@ -195,6 +240,13 @@ $loadTemplateButtonLabel = 'Load Template';
   const syncVisualInlineBtn = document.getElementById('fb_sync_visual_from_json_inline');
   const topSaveDraftBtn = document.getElementById('fb_save_draft_top');
   const topPublishBtn = document.getElementById('fb_publish_top');
+  const themeInput = document.getElementById('fb_theme_json');
+  const themePrimary = document.getElementById('fb_theme_primary');
+  const themeAccent = document.getElementById('fb_theme_accent');
+  const themeBackground = document.getElementById('fb_theme_background');
+  const themeSurface = document.getElementById('fb_theme_surface');
+  const themeText = document.getElementById('fb_theme_text');
+  const themeFont = document.getElementById('fb_theme_font');
 
   if (!fieldsContainer || !schemaTextarea || !addBtn || !saveForm) {
     return;
@@ -213,6 +265,72 @@ $loadTemplateButtonLabel = 'Load Template';
       .split(',')
       .map(function (part) { return part.trim(); })
       .filter(function (part) { return part !== ''; });
+  }
+
+  function normalizeTheme(raw) {
+    const defaults = {
+      primary_color: '#1F6FEB',
+      accent_color: '#2DA44E',
+      background_color: '#F6F8FA',
+      surface_color: '#FFFFFF',
+      text_color: '#1F2328',
+      font_family: 'system-ui',
+    };
+    const source = raw && typeof raw === 'object' ? raw : {};
+    const hexPattern = /^#[0-9A-Fa-f]{6}$/;
+    const out = Object.assign({}, defaults);
+    ['primary_color', 'accent_color', 'background_color', 'surface_color', 'text_color'].forEach(function (key) {
+      const value = String(source[key] || '').trim();
+      if (hexPattern.test(value)) {
+        out[key] = value.toUpperCase();
+      }
+    });
+    const font = String(source.font_family || '').trim();
+    const allowedFonts = ['system-ui', 'Georgia', 'Trebuchet MS', 'Verdana', 'Tahoma', 'Arial'];
+    if (allowedFonts.includes(font)) {
+      out.font_family = font;
+    }
+    return out;
+  }
+
+  function getThemeFromInputs() {
+    return normalizeTheme({
+      primary_color: themePrimary ? themePrimary.value : '#1F6FEB',
+      accent_color: themeAccent ? themeAccent.value : '#2DA44E',
+      background_color: themeBackground ? themeBackground.value : '#F6F8FA',
+      surface_color: themeSurface ? themeSurface.value : '#FFFFFF',
+      text_color: themeText ? themeText.value : '#1F2328',
+      font_family: themeFont ? themeFont.value : 'system-ui',
+    });
+  }
+
+  function applyThemeToInputs(theme) {
+    if (themePrimary) themePrimary.value = theme.primary_color;
+    if (themeAccent) themeAccent.value = theme.accent_color;
+    if (themeBackground) themeBackground.value = theme.background_color;
+    if (themeSurface) themeSurface.value = theme.surface_color;
+    if (themeText) themeText.value = theme.text_color;
+    if (themeFont) themeFont.value = theme.font_family;
+  }
+
+  function syncThemeJson() {
+    if (!themeInput) {
+      return;
+    }
+    const theme = getThemeFromInputs();
+    themeInput.value = JSON.stringify(theme);
+  }
+
+  function applyThemeToPreview(theme) {
+    if (!previewPanel) {
+      return;
+    }
+    previewPanel.style.background = theme.background_color;
+    previewPanel.style.color = theme.text_color;
+    previewPanel.style.fontFamily = theme.font_family;
+    previewPanel.style.padding = '10px';
+    previewPanel.style.borderRadius = '8px';
+    previewPanel.style.border = '1px solid ' + theme.primary_color;
   }
 
   function createFieldRow(field) {
@@ -481,7 +599,9 @@ $loadTemplateButtonLabel = 'Load Template';
     }
 
     const html = [];
-    html.push('<div class="card" style="margin-bottom:10px;"><strong>Preview Mode</strong><br><span class="muted">' + escapeHtml(builderType) + '</span></div>');
+    const theme = getThemeFromInputs();
+    applyThemeToPreview(theme);
+    html.push('<div class="card" style="margin-bottom:10px; border-color:' + escapeHtml(theme.primary_color) + ';"><strong>Preview Mode</strong><br><span class="muted">' + escapeHtml(builderType) + '</span></div>');
     schema.forEach(function (field) {
       const type = String(field.type || 'text');
       const label = String(field.label || 'Untitled');
@@ -510,6 +630,7 @@ $loadTemplateButtonLabel = 'Load Template';
 
   if (previewBtn) {
     previewBtn.addEventListener('click', function () {
+      syncThemeJson();
       syncJsonFromVisual();
       renderPreview(getVisualSchema());
       if (previewPanel) {
@@ -536,9 +657,37 @@ $loadTemplateButtonLabel = 'Load Template';
   }
 
   saveForm.addEventListener('submit', function () {
+    syncThemeJson();
     syncJsonFromVisual();
     renderPreview(getVisualSchema());
   });
+
+  const themeControls = [themePrimary, themeAccent, themeBackground, themeSurface, themeText, themeFont].filter(Boolean);
+  themeControls.forEach(function (control) {
+    control.addEventListener('input', function () {
+      syncThemeJson();
+      renderPreview(getVisualSchema());
+    });
+    control.addEventListener('change', function () {
+      syncThemeJson();
+      renderPreview(getVisualSchema());
+    });
+  });
+
+  try {
+    const rawTheme = JSON.parse((themeInput && themeInput.value) ? themeInput.value : '{}');
+    const normalizedTheme = normalizeTheme(rawTheme);
+    applyThemeToInputs(normalizedTheme);
+    if (themeInput) {
+      themeInput.value = JSON.stringify(normalizedTheme);
+    }
+  } catch (error) {
+    const fallbackTheme = normalizeTheme({});
+    applyThemeToInputs(fallbackTheme);
+    if (themeInput) {
+      themeInput.value = JSON.stringify(fallbackTheme);
+    }
+  }
 
   try {
     const parsed = JSON.parse(schemaTextarea.value || '[]');
