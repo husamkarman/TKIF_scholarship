@@ -105,6 +105,23 @@ $usingUnified = (bool)($formsLibraryUsingUnified ?? false);
               <input type="hidden" name="return_status" value="<?= h($formsStatus) ?>">
               <button class="btn" type="submit"><?= h($archiveLabel) ?></button>
             </form>
+            <?php if ($usingUnified): ?>
+              <form method="post" action="<?= h(app_route('forms_library_apply_theme')) ?>" style="display:inline-flex; gap:6px; align-items:center;" onsubmit="return confirm('Apply this theme to selected target form?');">
+                <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+                <input type="hidden" name="source_form_id" value="<?= $formId ?>">
+                <input type="hidden" name="return_q" value="<?= h($formsSearch) ?>">
+                <input type="hidden" name="return_status" value="<?= h($formsStatus) ?>">
+                <select name="target_form_id" required style="min-width: 160px;">
+                  <option value="">Apply theme to...</option>
+                  <?php foreach ($forms as $targetForm): ?>
+                    <?php $targetId = (int)($targetForm['id'] ?? 0); ?>
+                    <?php if ($targetId <= 0 || $targetId === $formId) { continue; } ?>
+                    <option value="<?= $targetId ?>">#<?= $targetId ?> - <?= h((string)($targetForm['title'] ?? 'Untitled')) ?></option>
+                  <?php endforeach; ?>
+                </select>
+                <button class="btn" type="submit">Apply Theme</button>
+              </form>
+            <?php endif; ?>
           </td>
         </tr>
       <?php endforeach; ?>
