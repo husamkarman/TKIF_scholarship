@@ -4778,7 +4778,20 @@ if ($page === 'forms_library_apply_theme' && $_SERVER['REQUEST_METHOD'] === 'POS
   }
 
   $sourceFormId = (int)($_POST['source_form_id'] ?? 0);
-  $targetFormId = (int)($_POST['target_form_id'] ?? 0);
+  $targetFormIds = [];
+  if (isset($_POST['target_form_ids']) && is_array($_POST['target_form_ids'])) {
+    foreach ($_POST['target_form_ids'] as $targetIdRaw) {
+      $targetId = (int)$targetIdRaw;
+      if ($targetId > 0) {
+        $targetFormIds[] = $targetId;
+      }
+    }
+  }
+  $singleTargetFormId = (int)($_POST['target_form_id'] ?? 0);
+  if ($singleTargetFormId > 0) {
+    $targetFormIds[] = $singleTargetFormId;
+  }
+  $targetFormIds = array_values(array_unique($targetFormIds));
   $returnSearch = trim((string)($_POST['return_q'] ?? ''));
   $returnStatus = strtolower(trim((string)($_POST['return_status'] ?? 'all')));
   if (!in_array($returnStatus, ['all', 'draft', 'published', 'closed', 'archived'], true)) {
@@ -4788,10 +4801,10 @@ if ($page === 'forms_library_apply_theme' && $_SERVER['REQUEST_METHOD'] === 'POS
   if (!forms_tables_ready($pdo)) {
     $error = 'Theme copy requires unified forms tables.';
     $page = 'forms_library';
-  } elseif ($sourceFormId <= 0 || $targetFormId <= 0) {
-    $error = 'Select both source and target forms.';
+  } elseif ($sourceFormId <= 0 || $targetFormIds === []) {
+    $error = 'Select source and at least one target form.';
     $page = 'forms_library';
-  } elseif ($sourceFormId === $targetFormId) {
+  } elseif (count($targetFormIds) === 1 && $sourceFormId === $targetFormIds[0]) {
     $error = 'Source and target forms must be different.';
     $page = 'forms_library';
   } else {
@@ -4799,12 +4812,8 @@ if ($page === 'forms_library_apply_theme' && $_SERVER['REQUEST_METHOD'] === 'POS
     $sourceStmt->execute([$sourceFormId, (int)$actor['tenant_id']]);
     $source = $sourceStmt->fetch();
 
-    $targetStmt = $pdo->prepare('SELECT id, title FROM forms WHERE id = ? AND tenant_id = ? LIMIT 1');
-    $targetStmt->execute([$targetFormId, (int)$actor['tenant_id']]);
-    $target = $targetStmt->fetch();
-
-    if (!$source || !$target) {
-      $error = 'Source or target form not found.';
+    if (!$source) {
+      $error = 'Source form not found.';
     } else {
       $normalizedTheme = normalize_form_theme(json_decode((string)($source['theme_json'] ?? '{}'), true));
       $themeJson = json_encode($normalizedTheme, JSON_UNESCAPED_UNICODE);
@@ -4812,24 +4821,47 @@ if ($page === 'forms_library_apply_theme' && $_SERVER['REQUEST_METHOD'] === 'POS
         $themeJson = json_encode(normalize_form_theme([]), JSON_UNESCAPED_UNICODE);
       }
 
-      $updateFormStmt = $pdo->prepare('UPDATE forms SET theme_json = ?, updated_at = NOW() WHERE id = ? AND tenant_id = ?');
-      $updateFormStmt->execute([$themeJson, $targetFormId, (int)$actor['tenant_id']]);
-
-      $latestVersionStmt = $pdo->prepare(
-        'SELECT id
-         FROM form_versions
-         WHERE form_id = ? AND tenant_id = ?
-         ORDER BY version_no DESC
-         LIMIT 1'
-      );
-      $latestVersionStmt->execute([$targetFormId, (int)$actor['tenant_id']]);
-      $latestVersion = $latestVersionStmt->fetch();
-      if ($latestVersion) {
-        $updateVersionStmt = $pdo->prepare('UPDATE form_versions SET theme_json = ? WHERE id = ? AND tenant_id = ?');
-        $updateVersionStmt->execute([$themeJson, (int)$latestVersion['id'], (int)$actor['tenant_id']]);
+      $targetPlaceholders = implode(', ', array_fill(0, count($targetFormIds), '?'));
+      $targetParams = $targetFormIds;
+      $targetParams[] = (int)$actor['tenant_id'];
+      $targetStmt = $pdo->prepare('SELECT id, title FROM forms WHERE id IN (' . $targetPlaceholders . ') AND tenant_id = ?');
+      $targetStmt->execute($targetParams);
+      $targetRows = $targetStmt->fetchAll();
+      $validTargetIds = [];
+      foreach ($targetRows as $targetRow) {
+        $targetRowId = (int)($targetRow['id'] ?? 0);
+        if ($targetRowId > 0 && $targetRowId !== $sourceFormId) {
+          $validTargetIds[] = $targetRowId;
+        }
       }
+      $validTargetIds = array_values(array_unique($validTargetIds));
 
-      $message = 'Theme copied from "' . (string)($source['title'] ?? 'Source') . '" to "' . (string)($target['title'] ?? 'Target') . '".';
+      if ($validTargetIds === []) {
+        $error = 'No valid target forms found.';
+        $page = 'forms_library';
+      } else {
+      $updateFormStmt = $pdo->prepare('UPDATE forms SET theme_json = ?, updated_at = NOW() WHERE id = ? AND tenant_id = ?');
+        $latestVersionStmt = $pdo->prepare(
+          'SELECT id
+           FROM form_versions
+           WHERE form_id = ? AND tenant_id = ?
+           ORDER BY version_no DESC
+           LIMIT 1'
+        );
+        $updateVersionStmt = $pdo->prepare('UPDATE form_versions SET theme_json = ? WHERE id = ? AND tenant_id = ?');
+
+        foreach ($validTargetIds as $targetFormId) {
+          $updateFormStmt->execute([$themeJson, $targetFormId, (int)$actor['tenant_id']]);
+
+          $latestVersionStmt->execute([$targetFormId, (int)$actor['tenant_id']]);
+          $latestVersion = $latestVersionStmt->fetch();
+          if ($latestVersion) {
+            $updateVersionStmt->execute([$themeJson, (int)$latestVersion['id'], (int)$actor['tenant_id']]);
+          }
+        }
+
+        $message = 'Theme copied from "' . (string)($source['title'] ?? 'Source') . '" to ' . count($validTargetIds) . ' form(s).';
+      }
     }
 
     $page = 'forms_library';

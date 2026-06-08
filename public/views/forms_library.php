@@ -33,6 +33,42 @@ $usingUnified = (bool)($formsLibraryUsingUnified ?? false);
   </form>
 </div>
 
+<?php if ($usingUnified && count($forms) > 1): ?>
+  <div class="card" style="margin-bottom: 14px;">
+    <h3>Bulk Theme Apply</h3>
+    <p class="muted">Copy one form theme to multiple target forms in a single action.</p>
+    <form method="post" action="<?= h(app_route('forms_library_apply_theme')) ?>" style="display:flex; gap:8px; flex-wrap:wrap; align-items:end;" onsubmit="return confirm('Apply selected source theme to all chosen target forms?');">
+      <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+      <input type="hidden" name="return_q" value="<?= h($formsSearch) ?>">
+      <input type="hidden" name="return_status" value="<?= h($formsStatus) ?>">
+      <div style="min-width:260px;">
+        <label>Source Form</label>
+        <select name="source_form_id" required>
+          <option value="">Choose source form...</option>
+          <?php foreach ($forms as $source): ?>
+            <?php $sourceId = (int)($source['id'] ?? 0); ?>
+            <?php if ($sourceId <= 0) { continue; } ?>
+            <option value="<?= $sourceId ?>">#<?= $sourceId ?> - <?= h((string)($source['title'] ?? 'Untitled')) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div style="min-width:320px; flex:1 1 320px;">
+        <label>Target Forms</label>
+        <select name="target_form_ids[]" multiple size="6" required>
+          <?php foreach ($forms as $target): ?>
+            <?php $targetId = (int)($target['id'] ?? 0); ?>
+            <?php if ($targetId <= 0) { continue; } ?>
+            <option value="<?= $targetId ?>">#<?= $targetId ?> - <?= h((string)($target['title'] ?? 'Untitled')) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div>
+        <button class="btn" type="submit">Apply Theme to Selected</button>
+      </div>
+    </form>
+  </div>
+<?php endif; ?>
+
 <div class="card">
   <h3>All Forms</h3>
   <?php if (!$usingUnified): ?>
